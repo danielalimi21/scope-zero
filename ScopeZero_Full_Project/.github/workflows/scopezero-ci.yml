@@ -1,0 +1,50 @@
+name: ScopeZero CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Static checks
+        run: npm run check
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Generate readiness report
+        run: npm run readiness:report
+
+      - name: Start gateway
+        run: node server.js &
+
+      - name: Wait for gateway
+        run: |
+          for i in $(seq 1 20); do
+            curl -fsS http://127.0.0.1:8788/v1/health && exit 0
+            sleep 1
+          done
+          exit 1
+
+      - name: Smoke test
+        run: node tools/smoke-test.js
+
+      - name: Verify ledger
+        run: node tools/verify-ledger.js

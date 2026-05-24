@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scopezero-config
+  namespace: scopezero
+data:
+  PORT: "8788"
+  NODE_ENV: production
+  SCOPEZERO_STORE: "postgres"
+  SCOPEZERO_REQUIRE_AUTH: "true"
+  SCOPEZERO_ALLOW_DEV_TOKEN: "false"
+  SCOPEZERO_CORS_ORIGIN: "https://scopezero.example.com"
+  SCOPEZERO_PUBLIC_BASE_URL: "https://scopezero.example.com"
+  SCOPEZERO_RATE_LIMIT_PER_MINUTE: "600"
+  SCOPEZERO_OIDC_ISSUER: "https://login.example.com/"
+  SCOPEZERO_OIDC_AUDIENCE: "api://scopezero"
+  SCOPEZERO_OIDC_JWKS_URL: "https://login.example.com/.well-known/jwks.json"
+  SCOPEZERO_SECRETS_PROVIDER: "local"
+  OTEL_SERVICE_NAME: "scopezero-gateway"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "https://otel-collector.example.com/v1/traces"

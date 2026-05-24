@@ -1,0 +1,25 @@
+{
+  "connectors": [
+    {
+      "name": "slack.draft",
+      "vendor": "Slack",
+      "mode": "draft-only",
+      "secret_ref": "SLACK_BOT_TOKEN",
+      "default_destination": "security-review"
+    },
+    {
+      "name": "github.pr",
+      "vendor": "GitHub",
+      "mode": "pull-request-draft",
+      "secret_ref": "GITHUB_TOKEN",
+      "allowed_orgs": ["example-org"]
+    },
+    {
+      "name": "aws.iam.attachPolicy",
+      "vendor": "AWS IAM",
+      "mode": "approval-required",
+      "secret_ref": "AWS_ROLE_ARN",
+      "allowed_accounts": ["123456789012"]
+    }
+  ]
+}

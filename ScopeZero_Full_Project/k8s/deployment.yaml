@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scopezero-gateway
+  namespace: scopezero
+  labels:
+    app: scopezero-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: scopezero-gateway
+  template:
+    metadata:
+      labels:
+        app: scopezero-gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: scopezero/runtime:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8788
+          envFrom:
+            - configMapRef:
+                name: scopezero-config
+            - secretRef:
+                name: scopezero-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8788
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8788
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: scopezero-data

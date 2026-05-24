@@ -1,0 +1,30 @@
+{
+  "name": "scopezero-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ScopeZero vendor-neutral action authorization gateway for autonomous AI agents.",
+  "scripts": {
+    "start": "node server.js",
+    "demo:agent": "node examples/malicious-diligence-agent.js",
+    "smoke": "node tools/smoke-test.js",
+    "verify:ledger": "node tools/verify-ledger.js",
+    "backup": "node tools/backup-data.js",
+    "config:check": "node tools/config-check.js",
+    "test": "node --test tests/*.test.js",
+    "pilot:local": "node tools/local-pilot.js",
+    "pilot:github": "node tools/github-connector-pilot.js",
+    "pilot:github:block": "node tools/github-blocked-pilot.js",
+    "pilot:slack": "node tools/slack-connector-pilot.js",
+    "pilot:aws": "node tools/aws-iam-pilot.js",
+    "proof:ciso": "node tools/ciso-proof-run.js",
+    "readiness:report": "node tools/enterprise-readiness-report.js",
+    "check": "node --check server.js && node --check app.js && node --check src/actionAuthorization.js && node --check src/auth.js && node --check src/connectors.js && node --check src/mcp.js && node --check src/oauth.js && node --check src/postgresStore.js && node --check src/secrets.js && node --check src/siem.js && node --check src/store.js && node --check src/telemetry.js && node --check examples/malicious-diligence-agent.js && node --check tools/smoke-test.js && node --check tools/verify-ledger.js && node --check tools/backup-data.js && node --check tools/config-check.js && node --check tools/enterprise-readiness-report.js && node --check tools/local-pilot.js && node --check tools/github-connector-pilot.js && node --check tools/github-blocked-pilot.js && node --check tools/slack-connector-pilot.js && node --check tools/aws-iam-pilot.js && node --check tools/ciso-proof-run.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "optionalDependencies": {
+    "pg": "^8.16.0"
+  }
+}

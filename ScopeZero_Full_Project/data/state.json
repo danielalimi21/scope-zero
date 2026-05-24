@@ -1,0 +1,197 @@
+{
+  "tenants": [
+    {
+      "tenant_id": "tenant_contoso",
+      "name": "Contoso Holdings",
+      "plan": "enterprise"
+    }
+  ],
+  "agents": [
+    {
+      "tenant_id": "tenant_contoso",
+      "agent_id": "agent.ma-diligence.72f1",
+      "name": "M&A Diligence Agent",
+      "owner": "vp.strategy@contoso.example",
+      "environment": "production",
+      "status": "active",
+      "allowed_tools": [
+        "drive.search",
+        "drive.read",
+        "slack.draft"
+      ],
+      "created_at": "2026-05-02T12:41:04.369Z"
+    }
+  ],
+  "missions": [
+    {
+      "capsule_type": "intent_bound_identity",
+      "protocol": "AATP-0.1",
+      "id": "mission_1cd5ef4283482705",
+      "tenant_id": "tenant_contoso",
+      "agent_id": "agent.ma-diligence.72f1",
+      "delegated_by": "vp.strategy@contoso.example",
+      "objective": "Review acquisition target documents and summarize commercial risk. Do not transmit raw customer, revenue, or payroll data outside the approved workspace.",
+      "allowed_tools": [
+        "drive.search",
+        "drive.read",
+        "slack.draft"
+      ],
+      "allowed_data_classes": [
+        "public",
+        "internal",
+        "confidential"
+      ],
+      "allowed_destinations": [
+        "diligence-room.contoso.example"
+      ],
+      "approval_profile": "standard",
+      "max_delegation_depth": 1,
+      "runtime_risk_budget": 68,
+      "issued_at": "2026-05-02T12:37:11.070Z",
+      "expires_at": "2026-05-02T13:22:11.070Z",
+      "status": "active",
+      "signature": "sz1.e8d76c7bdb7be8a00e744faf89ba84a7af8603e9a8104a8d7493a2088ec1279f"
+    },
+    {
+      "capsule_type": "intent_bound_identity",
+      "protocol": "AATP-0.1",
+      "id": "mission_17f34d63dfc04cf8",
+      "tenant_id": "tenant_contoso",
+      "agent_id": "agent.ma-diligence.72f1",
+      "delegated_by": "vp.strategy@contoso.example",
+      "objective": "Review acquisition target documents and summarize commercial risk. Do not transmit raw customer, revenue, or payroll data outside the approved workspace.",
+      "allowed_tools": [
+        "drive.search",
+        "drive.read",
+        "slack.draft"
+      ],
+      "allowed_data_classes": [
+        "public",
+        "internal",
+        "confidential"
+      ],
+      "allowed_destinations": [
+        "diligence-room.contoso.example"
+      ],
+      "approval_profile": "standard",
+      "max_delegation_depth": 1,
+      "runtime_risk_budget": 68,
+      "issued_at": "2026-05-02T12:38:24.141Z",
+      "expires_at": "2026-05-02T13:23:24.141Z",
+      "status": "active",
+      "signature": "sz1.f1aed37d7900986b98ff4a826f7f26d5432193ec19719a16b3cb7bff311efc67"
+    },
+    {
+      "capsule_type": "intent_bound_identity",
+      "protocol": "AATP-0.1",
+      "id": "mission_af573e5e415928bc",
+      "tenant_id": "tenant_contoso",
+      "agent_id": "agent.ma-diligence.72f1",
+      "delegated_by": "vp.strategy@contoso.example",
+      "objective": "Review acquisition target documents and summarize commercial risk. Do not transmit raw customer, revenue, or payroll data outside the approved workspace.",
+      "allowed_tools": [
+        "drive.search",
+        "drive.read",
+        "slack.draft"
+      ],
+      "allowed_data_classes": [
+        "public",
+        "internal",
+        "confidential"
+      ],
+      "allowed_destinations": [
+        "diligence-room.contoso.example",
+        "contoso.example"
+      ],
+      "approval_profile": "standard",
+      "max_delegation_depth": 1,
+      "runtime_risk_budget": 68,
+      "issued_at": "2026-05-02T12:40:18.110Z",
+      "expires_at": "2026-05-02T13:25:18.110Z",
+      "status": "active",
+      "signature": "sz1.0e0cc8219c7305f813e8bf419a8d32659978b13f8eee6f4ceed13fad3dd2683b"
+    },
+    {
+      "capsule_type": "intent_bound_identity",
+      "protocol": "AATP-0.1",
+      "id": "mission_927042b28fa18a07",
+      "tenant_id": "tenant_contoso",
+      "agent_id": "agent.ma-diligence.72f1",
+      "delegated_by": "vp.strategy@contoso.example",
+      "objective": "Review acquisition target documents and summarize commercial risk. Do not transmit raw customer, revenue, or payroll data outside the approved workspace.",
+      "allowed_tools": [
+        "drive.search",
+        "drive.read",
+        "slack.draft"
+      ],
+      "allowed_data_classes": [
+        "public",
+        "internal",
+        "confidential"
+      ],
+      "allowed_destinations": [
+        "diligence-room.contoso.example"
+      ],
+      "approval_profile": "standard",
+      "max_delegation_depth": 1,
+      "runtime_risk_budget": 68,
+      "issued_at": "2026-05-02T12:41:04.381Z",
+      "expires_at": "2026-05-02T13:26:04.381Z",
+      "status": "active",
+      "signature": "sz1.ff752a357d3603fe4178ab20ea7441083aebc7b2a5fd5f6bcc7423877a3fd5ab"
+    }
+  ],
+  "approvals": [],
+  "sessions": {
+    "demo-1777725431014": {
+      "risk_consumed": 47
+    },
+    "demo-1777725504085": {
+      "risk_consumed": 47
+    },
+    "ui-1777725618123": {
+      "risk_consumed": 59
+    },
+    "demo-1777725664325": {
+      "risk_consumed": 47
+    }
+  },
+  "policies": {
+    "tenant_contoso": {
+      "policy_id": "scopezero.enterprise.default",
+      "version": "0.1.0",
+      "mode": "enforce",
+      "mission_lock": true,
+      "prompt_injection_shield": true,
+      "sensitive_egress_guard": true,
+      "approval_gates": true,
+      "redact_sensitive_outputs": true,
+      "max_delegation_depth": 1,
+      "runtime_risk_budget": 68,
+      "financial_approval_threshold": 50000,
+      "admin_privilege_requires_approval": true,
+      "sensitive_data_block_level": 4,
+      "trusted_destinations": [
+        "contoso.example",
+        "diligence-room.contoso.example"
+      ],
+      "blocked_prompt_patterns": [
+        "ignore previous",
+        "ignore all previous",
+        "bypass policy",
+        "send to external",
+        "exfiltrate",
+        "disable guardrails",
+        "reveal system prompt"
+      ]
+    }
+  },
+  "metrics": {
+    "runtime_decisions": 20,
+    "blocked_actions": 8,
+    "approvals_required": 0,
+    "redactions": 0,
+    "quarantined_contexts": 4,
+    "evidence_capsules": 20
+  }
+}

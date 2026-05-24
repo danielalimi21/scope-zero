@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ScopeZero CISO Buyer Packet</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #071013;
+        --panel: #0d1d22;
+        --ink: #eff8f6;
+        --muted: #a7bbb8;
+        --line: rgba(183, 230, 221, 0.16);
+        --accent: #45e0a8;
+        --blue: #4aa3ff;
+        --danger: #ff6b6b;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: linear-gradient(135deg, #071013, #0a181c 54%, #111827);
+        color: var(--ink);
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 48px 22px;
+      }
+      header {
+        padding: 34px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(13, 29, 34, 0.86);
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(2.1rem, 5vw, 4.8rem);
+        line-height: 1;
+      }
+      h2 { margin-bottom: 8px; }
+      p, li { color: var(--muted); line-height: 1.7; }
+      .eyebrow {
+        color: var(--accent);
+        text-transform: uppercase;
+        font-weight: 800;
+        font-size: 0.76rem;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 20px;
+      }
+      .card {
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(13, 29, 34, 0.82);
+      }
+      .card strong {
+        display: block;
+        font-size: 1.08rem;
+        margin-bottom: 8px;
+      }
+      .proof {
+        margin-top: 24px;
+        border-collapse: collapse;
+        width: 100%;
+        overflow: hidden;
+        border-radius: 8px;
+      }
+      th, td {
+        border: 1px solid var(--line);
+        padding: 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th { color: var(--accent); background: rgba(69, 224, 168, 0.08); }
+      td { color: var(--muted); }
+      .allow { color: var(--accent); font-weight: 800; }
+      .block { color: var(--danger); font-weight: 800; }
+      .approval { color: var(--blue); font-weight: 800; }
+      .quote {
+        margin-top: 24px;
+        padding: 22px;
+        border-left: 4px solid var(--accent);
+        background: rgba(69, 224, 168, 0.08);
+        color: var(--ink);
+        font-size: 1.2rem;
+      }
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 18px;
+      }
+      .step {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .step span {
+        display: inline-flex;
+        width: 26px;
+        height: 26px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        background: rgba(69, 224, 168, 0.12);
+        color: var(--accent);
+        font-weight: 800;
+        margin-bottom: 10px;
+      }
+      .step strong {
+        display: block;
+        color: var(--ink);
+        margin-bottom: 6px;
+      }
+      .decision-list {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .decision-list div {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        color: var(--ink);
+        font-weight: 800;
+        text-align: center;
+        background: rgba(13, 29, 34, 0.7);
+      }
+      @media (max-width: 800px) {
+        .grid { grid-template-columns: 1fr; }
+        .flow { grid-template-columns: 1fr; }
+        .decision-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        table { font-size: 0.9rem; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="eyebrow">ScopeZero</div>
+        <h1>Pre-execution authorization for autonomous AI-agent actions.</h1>
+        <p>
+          ScopeZero governs agent tool calls across code, communication, cloud privilege, data movement, and workflow systems before execution.
+        </p>
+        <div class="quote">IAM says whether the agent has access. ScopeZero says whether this exact autonomous action is authorized right now.</div>
+      </header>
+
+      <section class="grid">
+        <div class="card">
+          <strong>Mission-Scoped</strong>
+          <p>Agents receive signed, short-lived action contracts defining allowed tools, operations, data classes, destinations, and approval rules.</p>
+        </div>
+        <div class="card">
+          <strong>Pre-Execution</strong>
+          <p>ScopeZero decides before the tool call reaches GitHub, Slack, AWS IAM, SaaS systems, cloud APIs, or MCP servers.</p>
+        </div>
+        <div class="card">
+          <strong>Evidence-Ready</strong>
+          <p>Every decision is recorded into a tamper-evident evidence chain for SOC, GRC, legal, and incident response review.</p>
+        </div>
+      </section>
+
+      <section>
+        <h2>How ScopeZero Works</h2>
+        <p>
+          ScopeZero is deterministic. It can govern LLM-powered agents, but it does not need an LLM to decide whether an action is allowed.
+        </p>
+        <div class="flow">
+          <div class="step">
+            <span>1</span>
+            <strong>Normalize</strong>
+            <p>Convert the tool call into a common action descriptor across GitHub, Slack, AWS, SaaS, cloud APIs, and MCP tools.</p>
+          </div>
+          <div class="step">
+            <span>2</span>
+            <strong>Classify</strong>
+            <p>Evaluate data sensitivity, destination trust, prompt influence, privilege impact, money movement, and delegation depth.</p>
+          </div>
+          <div class="step">
+            <span>3</span>
+            <strong>Authorize</strong>
+            <p>Match the action against a signed mission contract and tenant policy before the downstream tool is called.</p>
+          </div>
+          <div class="step">
+            <span>4</span>
+            <strong>Prove</strong>
+            <p>Return a decision and write the full reason trail into a tamper-evident evidence chain.</p>
+          </div>
+        </div>
+        <div class="decision-list">
+          <div>allow</div>
+          <div>block</div>
+          <div>redact</div>
+          <div>quarantine</div>
+          <div>approval</div>
+          <div>pause</div>
+        </div>
+      </section>
+
+      <section>
+        <h2>CISO Proof Matrix</h2>
+        <table class="proof">
+          <thead>
+            <tr>
+              <th>Surface</th>
+              <th>Action</th>
+              <th>Decision</th>
+              <th>Proof</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>GitHub</td>
+              <td>Safe documentation pull request</td>
+              <td class="allow">allow</td>
+              <td>In-contract code action executed with evidence.</td>
+            </tr>
+            <tr>
+              <td>GitHub</td>
+              <td>Dangerous pull request with sensitive material and infrastructure change</td>
+              <td class="block">block</td>
+              <td>Blocked before GitHub execution.</td>
+            </tr>
+            <tr>
+              <td>Slack</td>
+              <td>Safe internal message</td>
+              <td class="allow">allow</td>
+              <td>In-contract communication executed with evidence.</td>
+            </tr>
+            <tr>
+              <td>Slack</td>
+              <td>Prompt-influenced sensitive message</td>
+              <td class="block">block</td>
+              <td>Blocked before Slack execution.</td>
+            </tr>
+            <tr>
+              <td>AWS IAM</td>
+              <td>Admin privilege escalation</td>
+              <td class="block">block</td>
+              <td>Denied before cloud mutation.</td>
+            </tr>
+            <tr>
+              <td>AWS IAM</td>
+              <td>High-impact policy change</td>
+              <td class="approval">approval</td>
+              <td>Routed to human review.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

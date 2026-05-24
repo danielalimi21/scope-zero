@@ -1,0 +1,390 @@
+openapi: 3.1.0
+info:
+  title: ScopeZero Gateway API
+  version: 0.1.0
+  summary: Vendor-neutral action authorization gateway for autonomous AI-agent tool calls.
+  description: |
+    ScopeZero evaluates AI-agent tool calls before execution. It checks agent identity,
+    human delegation, signed mission action contracts, tool, operation, data class,
+    destination, prompt influence, risk budget, and approval policy.
+servers:
+  - url: http://localhost:8788
+    description: Local gateway
+security:
+  - bearerAuth: []
+paths:
+  /v1/health:
+    get:
+      tags: [Operations]
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: Gateway is alive
+  /v1/ready:
+    get:
+      tags: [Operations]
+      summary: Readiness and configured enterprise controls
+      security: []
+      responses:
+        "200":
+          description: Readiness state
+  /v1/auth/dev-token:
+    post:
+      tags: [Identity]
+      summary: Issue a local development token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenant_id: { type: string, example: tenant_contoso }
+                subject: { type: string, example: security@contoso.example }
+                roles:
+                  type: array
+                  items: { type: string }
+      responses:
+        "201":
+          description: Bearer token issued
+  /v1/agents:
+    post:
+      tags: [Agents]
+      summary: Register or update an agent identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Agent"
+      responses:
+        "201":
+          description: Agent registered
+  /v1/missions:
+    post:
+      tags: [Missions]
+      summary: Create and sign a mission action contract
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MissionRequest"
+      responses:
+        "201":
+          description: Signed mission capsule
+  /v1/action-authorizations:
+    post:
+      tags: [Authorization]
+      summary: Authorize a proposed agent action before execution
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActionAuthorizationRequest"
+      responses:
+        "200":
+          description: Authorization decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionAuthorizationResponse"
+  /v1/tool-calls:
+    post:
+      tags: [Authorization]
+      summary: Alias for action authorization for tool-call flows
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActionAuthorizationRequest"
+      responses:
+        "200":
+          description: Authorization decision
+  /mcp:
+    post:
+      tags: [MCP]
+      summary: MCP JSON-RPC proxy with pre-execution authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: JSON-RPC response
+  /v1/mcp:
+    post:
+      tags: [MCP]
+      summary: Versioned MCP JSON-RPC proxy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: JSON-RPC response
+  /v1/policy:
+    get:
+      tags: [Policy]
+      summary: Read tenant policy
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: Tenant policy
+    put:
+      tags: [Policy]
+      summary: Directly update tenant policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated policy
+  /v1/policy/versions:
+    get:
+      tags: [Policy]
+      summary: List tenant policy versions
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: Policy versions
+  /v1/policy/proposals:
+    post:
+      tags: [Policy]
+      summary: Propose a policy change for approval
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenant_id: { type: string }
+                policy: { type: object }
+      responses:
+        "201":
+          description: Policy proposal
+  /v1/policy/proposals/{proposalId}/approve:
+    post:
+      tags: [Policy]
+      summary: Approve a policy proposal
+      parameters:
+        - $ref: "#/components/parameters/ProposalId"
+      responses:
+        "200":
+          description: Approved proposal
+  /v1/policy/proposals/{proposalId}/deny:
+    post:
+      tags: [Policy]
+      summary: Deny a policy proposal
+      parameters:
+        - $ref: "#/components/parameters/ProposalId"
+      responses:
+        "200":
+          description: Denied proposal
+  /v1/approvals/{approvalId}/approve:
+    post:
+      tags: [Approvals]
+      summary: Approve a pending human approval request
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      responses:
+        "200":
+          description: Approval outcome
+  /v1/approvals/{approvalId}/deny:
+    post:
+      tags: [Approvals]
+      summary: Deny a pending human approval request
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      responses:
+        "200":
+          description: Approval outcome
+  /v1/ledger:
+    get:
+      tags: [Evidence]
+      summary: Read recent evidence events
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: Evidence events
+  /v1/ledger/verify:
+    get:
+      tags: [Evidence]
+      summary: Verify hash-chain integrity
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: Ledger verification result
+  /v1/siem/events:
+    get:
+      tags: [Evidence]
+      summary: Export evidence to SIEM formats
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, cef, leef]
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: SIEM export
+  /v1/siem/otlp:
+    get:
+      tags: [Evidence]
+      summary: Export OTLP-style log payload
+      responses:
+        "200":
+          description: OTLP-style logs
+  /v1/connectors:
+    get:
+      tags: [Connectors]
+      summary: List registered connector boundaries
+      responses:
+        "200":
+          description: Connector list
+  /v1/secrets:
+    get:
+      tags: [Secrets]
+      summary: List encrypted secret references
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: Secret references
+    post:
+      tags: [Secrets]
+      summary: Create an encrypted secret reference
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, value]
+              properties:
+                tenant_id: { type: string }
+                name: { type: string }
+                value: { type: string, format: password }
+      responses:
+        "201":
+          description: Secret reference
+  /v1/telemetry/traces:
+    get:
+      tags: [Operations]
+      summary: Read recent local OpenTelemetry-compatible spans
+      responses:
+        "200":
+          description: Trace snapshot
+  /v1/compliance/controls:
+    get:
+      tags: [Compliance]
+      summary: SOC2-oriented control map
+      responses:
+        "200":
+          description: Control map
+  /metrics:
+    get:
+      tags: [Operations]
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200":
+          description: Metrics
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    TenantId:
+      name: tenant_id
+      in: query
+      schema: { type: string, example: tenant_contoso }
+    ApprovalId:
+      name: approvalId
+      in: path
+      required: true
+      schema: { type: string }
+    ProposalId:
+      name: proposalId
+      in: path
+      required: true
+      schema: { type: string }
+  schemas:
+    Agent:
+      type: object
+      required: [tenant_id, agent_id, owner]
+      properties:
+        tenant_id: { type: string }
+        agent_id: { type: string }
+        name: { type: string }
+        owner: { type: string }
+        allowed_tools:
+          type: array
+          items: { type: string }
+    MissionRequest:
+      type: object
+      required: [tenant_id, agent_id, delegated_by, objective]
+      properties:
+        tenant_id: { type: string }
+        agent_id: { type: string }
+        delegated_by: { type: string }
+        objective: { type: string }
+        allowed_tools:
+          type: array
+          items: { type: string }
+        allowed_data_classes:
+          type: array
+          items: { type: string }
+        allowed_destinations:
+          type: array
+          items: { type: string }
+        ttl_minutes: { type: integer }
+    ActionAuthorizationRequest:
+      type: object
+      required: [tenant_id, agent_id, mission_id, tool, action]
+      properties:
+        tenant_id: { type: string }
+        agent_id: { type: string }
+        mission_id: { type: string }
+        session_id: { type: string }
+        tool: { type: string }
+        action: { type: string }
+        operation: { type: string }
+        payload: { type: object }
+        destination: { type: object }
+        context: { type: object }
+        money: { type: object }
+        privilege: { type: object }
+    ActionAuthorizationResponse:
+      type: object
+      properties:
+        protocol: { type: string }
+        event_id: { type: string }
+        authorization_id: { type: string }
+        evidence_hash: { type: string }
+        decision:
+          type: string
+          enum: [allow, block, redact, quarantine_context, approval, pause_session]
+        verdict:
+          type: object

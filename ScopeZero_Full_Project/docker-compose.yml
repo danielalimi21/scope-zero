@@ -1,0 +1,25 @@
+services:
+  scopezero:
+    build: .
+    image: scopezero/runtime:0.1.0
+    ports:
+      - "8788:8788"
+    environment:
+      PORT: "8788"
+      SCOPEZERO_REQUIRE_AUTH: "true"
+      SCOPEZERO_ALLOW_DEV_TOKEN: "true"
+      SCOPEZERO_CORS_ORIGIN: "http://localhost:8788"
+      SCOPEZERO_SIGNING_SECRET: "replace-with-32-byte-signing-secret"
+      SCOPEZERO_AUTH_SECRET: "replace-with-32-byte-auth-secret"
+      SCOPEZERO_API_KEY: "replace-with-service-api-key"
+      SCOPEZERO_SECRETS_MASTER_KEY: "replace-with-32-byte-secrets-master-key"
+    volumes:
+      - scopezero-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  scopezero-data:

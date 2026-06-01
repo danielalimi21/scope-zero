@@ -21,6 +21,9 @@ export function createMissionCapsule(input, signingSecret) {
     approval_profile: input.approval_profile || "standard",
     max_delegation_depth: Number(input.max_delegation_depth ?? 1),
     runtime_risk_budget: Number(input.runtime_risk_budget ?? 68),
+    parent_mission_id: input.parent_mission_id || null,
+    spawned_by_agent_id: input.spawned_by_agent_id || null,
+    delegation_depth: Number(input.delegation_depth ?? 0),
     issued_at: issuedAt,
     expires_at: expiresAt,
     status: "active"

@@ -43,6 +43,8 @@ Usage:
   scopezero approvals
   scopezero approval approve <id> [--actor <email>]
   scopezero approval deny <id> [--actor <email>]
+  scopezero chains [--tenant <id>]
+  scopezero chain <mission-id> [--tenant <id>]
   scopezero report [--tenant <id>] [--from <iso-date>] [--to <iso-date>] [--format json|html]
 
 Environment:
@@ -172,6 +174,20 @@ switch (command) {
     out(await api("POST", `/v1/approvals/${encodeURIComponent(id)}/${subcommand}`, {
       actor: values.actor || "cli.operator"
     }));
+    break;
+  }
+
+  case "chains": {
+    const tenant = values.tenant || "tenant_contoso";
+    out(await api("GET", `/v1/chains?tenant_id=${encodeURIComponent(tenant)}`));
+    break;
+  }
+
+  case "chain": {
+    const missionId = subcommand || positionals[0];
+    if (!missionId) fail("Usage: scopezero chain <mission-id>");
+    const tenant = values.tenant || "tenant_contoso";
+    out(await api("GET", `/v1/missions/${encodeURIComponent(missionId)}/chain?tenant_id=${encodeURIComponent(tenant)}`));
     break;
   }
 

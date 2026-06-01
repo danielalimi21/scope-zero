@@ -311,6 +311,19 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, await runtime.store.setPolicy(tenantId, body.policy || body));
   }
 
+  if (req.method === "GET" && url.pathname === "/v1/chains") {
+    const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "tenant:read", tenantId);
+    return sendJson(res, 200, await runtime.listChains(tenantId));
+  }
+
+  const missionChainMatch = url.pathname.match(/^\/v1\/missions\/([^/]+)\/chain$/);
+  if (req.method === "GET" && missionChainMatch) {
+    const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "tenant:read", tenantId);
+    return sendJson(res, 200, await runtime.getMissionChain(missionChainMatch[1], tenantId));
+  }
+
   if (req.method === "POST" && url.pathname === "/v1/agents") {
     const body = await readJson(req);
     const tenantId = enforceTenant(principal, body.tenant_id);

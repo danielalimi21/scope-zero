@@ -9,6 +9,7 @@ import { Ledger } from "./ledger.js";
 import { createLedgerAnchorFromEnv } from "./ledgerAnchor.js";
 import { PostgresStore } from "./postgresStore.js";
 import { Store } from "./store.js";
+import { validateChainForNewMission, resolveChain, buildChainForest, describeChain } from "./agentChain.js";
 
 export async function createRuntime({ rootDir, signingSecret, toolManifestResolver = null, approvalNotifier = null }) {
   const defaultPolicy = JSON.parse(await readFile(new URL("../config/defaultPolicy.json", import.meta.url), "utf8"));
@@ -57,18 +58,68 @@ export class ScopeZeroRuntime {
       throw httpError(404, "unknown_agent", "Agent is not registered.");
     }
     const tenantPolicy = this.store.getPolicy(input.tenant_id);
+    const maxDelegationDepth = input.max_delegation_depth ?? tenantPolicy.max_delegation_depth;
+
+    // Chain validation — runs when a sub-agent is spawning a child mission
+    let parentMission = null;
+    let delegation_depth = 0;
+    let spawned_by_agent_id = null;
+    if (input.parent_mission_id) {
+      parentMission = this.store.getMission(input.parent_mission_id, input.tenant_id);
+      if (!parentMission) {
+        throw httpError(404, "unknown_parent_mission", "Parent mission not found.");
+      }
+      const chainResult = validateChainForNewMission({
+        parentMission,
+        newAgentId: input.agent_id,
+        maxDelegationDepth,
+        store: this.store
+      });
+      delegation_depth = chainResult.depth;
+      spawned_by_agent_id = parentMission.agent_id;
+    }
+
     const capsule = createMissionCapsule(
       {
         ...input,
         allowed_tools: input.allowed_tools || agent.allowed_tools,
-        max_delegation_depth: input.max_delegation_depth ?? tenantPolicy.max_delegation_depth,
-        runtime_risk_budget: input.runtime_risk_budget ?? tenantPolicy.runtime_risk_budget
+        max_delegation_depth: maxDelegationDepth,
+        runtime_risk_budget: input.runtime_risk_budget ?? tenantPolicy.runtime_risk_budget,
+        parent_mission_id: input.parent_mission_id || null,
+        spawned_by_agent_id,
+        delegation_depth
       },
       this.signingSecret
     );
     await this.store.addMission(capsule);
-    const evidence = await this.ledger.append({ event_type: "mission.issued", mission: capsule });
-    return { capsule, evidence };
+    const chain = resolveChain(capsule.id, this.store);
+    const evidence = await this.ledger.append({
+      event_type: "mission.issued",
+      mission: capsule,
+      chain_depth: delegation_depth,
+      parent_mission_id: input.parent_mission_id || null
+    });
+    return { capsule, chain: describeChain(chain), evidence };
+  }
+
+  async getMissionChain(missionId, tenantId) {
+    const mission = this.store.getMission(missionId, tenantId);
+    if (!mission) throw httpError(404, "unknown_mission", "Mission not found.");
+    const chain = resolveChain(missionId, this.store);
+    return describeChain(chain);
+  }
+
+  async listChains(tenantId) {
+    const missions = (this.store.state.missions || []).filter(
+      (m) => !tenantId || m.tenant_id === tenantId
+    );
+    const forest = buildChainForest(missions);
+    return {
+      chains: forest.map((root) => describeChainNode(root)),
+      total_missions: missions.length,
+      root_missions: forest.length,
+      max_observed_depth: missions.reduce((max, m) => Math.max(max, m.delegation_depth ?? 0), 0)
+    };
   }
 
   async evaluateToolCall(input) {
@@ -342,6 +393,19 @@ function withoutPolicyBody(proposal) {
   return {
     ...summary,
     changed_keys: Object.keys(policy || {})
+  };
+}
+
+function describeChainNode(node) {
+  return {
+    mission_id: node.id,
+    agent_id: node.agent_id,
+    objective: node.objective,
+    human_delegator: node.delegated_by,
+    delegation_depth: node.delegation_depth ?? 0,
+    status: node.status,
+    expires_at: node.expires_at,
+    children: (node.children || []).map(describeChainNode)
   };
 }
 

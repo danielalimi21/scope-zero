@@ -110,6 +110,15 @@ export async function generateComplianceReport({ ledger, store, tenantId, from, 
     .sort((a, b) => b.blocked - a.blocked)
     .slice(0, 10);
 
+  // Multi-agent chain stats
+  const allMissions = (store.state.missions || []).filter((m) => !tenantId || m.tenant_id === tenantId);
+  const chainViolationCodes = new Set(["chain_cycle", "chain_depth_exceeded", "parent_mission_inactive", "parent_mission_expired"]);
+  const chainViolations = authEvents.filter((e) =>
+    (e.record?.verdict?.reasons || []).some((r) => chainViolationCodes.has(r.code))
+  );
+  const maxObservedDepth = allMissions.reduce((max, m) => Math.max(max, m.delegation_depth ?? 0), 0);
+  const subMissions = allMissions.filter((m) => m.parent_mission_id);
+
   const report = {
     report_id: createId("rpt", `${tenantId || "all"}:${fromIso}:${toIso}`),
     generated_at: nowIso(),
@@ -142,6 +151,20 @@ export async function generateComplianceReport({ ledger, store, tenantId, from, 
     approval_log: approvalLog,
     incident_log: incidentLog.slice(0, 100),
     policy_versions: policyVersions,
+    agent_chains: {
+      total_missions: allMissions.length,
+      root_missions: allMissions.filter((m) => !m.parent_mission_id).length,
+      sub_missions: subMissions.length,
+      max_observed_depth: maxObservedDepth,
+      chain_violations: chainViolations.length,
+      violation_log: chainViolations.slice(0, 20).map((e) => ({
+        time: e.time,
+        agent_id: e.record.agent_id,
+        mission_id: e.record.mission_id,
+        reasons: (e.record?.verdict?.reasons || []).filter((r) => chainViolationCodes.has(r.code)).map((r) => r.message),
+        evidence_hash: e.hash
+      }))
+    },
     compliance_mapping: buildComplianceMapping(decisions, ledgerIntegrity, promptInjectionCount)
   };
 
@@ -400,6 +423,26 @@ function renderHtml(report) {
     <thead><tr><th>Time (UTC)</th><th>Agent</th><th>Tool</th><th>Outcome</th><th>Reviewed By</th></tr></thead>
     <tbody>${approvalRows}</tbody>
   </table>` : ""}
+
+  <h2>Multi-Agent Delegation Chains</h2>
+  <div class="cards" style="grid-template-columns:repeat(4,1fr)">
+    <div class="card"><div class="val">${report.agent_chains.total_missions}</div><div class="lbl">Total Missions</div></div>
+    <div class="card"><div class="val">${report.agent_chains.sub_missions}</div><div class="lbl">Sub-Agent Missions</div></div>
+    <div class="card"><div class="val">${report.agent_chains.max_observed_depth}</div><div class="lbl">Max Chain Depth</div></div>
+    <div class="card"><div class="val ${report.agent_chains.chain_violations > 0 ? "red" : "green"}">${report.agent_chains.chain_violations}</div><div class="lbl">Chain Violations</div></div>
+  </div>
+  ${report.agent_chains.violation_log.length > 0 ? `
+  <table style="margin-top:8px">
+    <thead><tr><th>Time (UTC)</th><th>Agent</th><th>Mission</th><th>Violation</th></tr></thead>
+    <tbody>${report.agent_chains.violation_log.map((v) => `
+      <tr>
+        <td class="mono">${esc(v.time.slice(0, 19).replace("T", " "))}</td>
+        <td>${esc(v.agent_id)}</td>
+        <td class="mono" style="font-size:11px">${esc(v.mission_id || "—")}</td>
+        <td class="red">${esc(v.reasons.join("; "))}</td>
+      </tr>`).join("")}
+    </tbody>
+  </table>` : '<p style="color:#aaa;font-size:12px;margin-top:8px">No chain violations in this period.</p>'}
 
   <h2>SOC 2 Control Coverage</h2>
   <table>

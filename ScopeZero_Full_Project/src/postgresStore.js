@@ -34,11 +34,13 @@ export class PostgresStore extends Store {
     }
     for (const session of Object.values(this.state.sessions || {})) {
       if (session?.tenant_id && session?.session_id) {
-        await this.pool.query(
-          `INSERT INTO sessions (tenant_id, session_id, risk_consumed, updated_at)
-           VALUES ($1, $2, $3, now())
-           ON CONFLICT (tenant_id, session_id) DO UPDATE SET risk_consumed = excluded.risk_consumed, updated_at = now()`,
-          [session.tenant_id, session.session_id, Number(session.risk_consumed || 0)]
+        await this.withTenant(session.tenant_id, (client) =>
+          client.query(
+            `INSERT INTO sessions (tenant_id, session_id, risk_consumed, updated_at)
+             VALUES ($1, $2, $3, now())
+             ON CONFLICT (tenant_id, session_id) DO UPDATE SET risk_consumed = excluded.risk_consumed, updated_at = now()`,
+            [session.tenant_id, session.session_id, Number(session.risk_consumed || 0)]
+          )
         );
       }
     }
@@ -59,59 +61,89 @@ export class PostgresStore extends Store {
   // them through withWriteLock (full-state read-modify-write under one advisory
   // lock) would cap the whole gateway to single-writer throughput. These are
   // per-agent / per-session independent rows, so atomic upserts let concurrent
-  // evaluations proceed in parallel.
+  // evaluations proceed in parallel. Each runs in its own short transaction that
+  // sets the tenant GUC so row-level security stays enforced (FORCE RLS) — no
+  // global lock, just a per-row write scoped to the caller's tenant.
+
+  async withTenant(tenantId, fn) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('scopezero.tenant_id', $1, true)", [String(tenantId ?? "*")]);
+      const result = await fn(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 
   async getBehaviorProfile(tenantId, agentId) {
-    const result = await this.pool.query(
-      "SELECT body FROM behavior_profiles WHERE tenant_id = $1 AND agent_id = $2",
-      [tenantId, agentId]
-    );
-    return result.rows[0]?.body || null;
+    return this.withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        "SELECT body FROM behavior_profiles WHERE tenant_id = $1 AND agent_id = $2",
+        [tenantId, agentId]
+      );
+      return result.rows[0]?.body || null;
+    });
   }
 
   async recordToolCall(tenantId, agentId, toolKey, profile) {
-    await this.pool.query(
-      `INSERT INTO behavior_profiles (tenant_id, agent_id, body, updated_at)
-       VALUES ($1, $2, $3::jsonb, now())
-       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET body = excluded.body, updated_at = now()`,
-      [tenantId, agentId, JSON.stringify(profile)]
+    return this.withTenant(tenantId, (client) =>
+      client.query(
+        `INSERT INTO behavior_profiles (tenant_id, agent_id, body, updated_at)
+         VALUES ($1, $2, $3::jsonb, now())
+         ON CONFLICT (tenant_id, agent_id) DO UPDATE SET body = excluded.body, updated_at = now()`,
+        [tenantId, agentId, JSON.stringify(profile)]
+      )
     );
   }
 
   async getSessionRisk(sessionId, tenantId = "tenant_contoso") {
-    const result = await this.pool.query(
-      "SELECT risk_consumed FROM sessions WHERE tenant_id = $1 AND session_id = $2",
-      [tenantId, sessionId]
-    );
-    return result.rows[0]?.risk_consumed || 0;
+    return this.withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        "SELECT risk_consumed FROM sessions WHERE tenant_id = $1 AND session_id = $2",
+        [tenantId, sessionId]
+      );
+      return result.rows[0]?.risk_consumed || 0;
+    });
   }
 
   async updateSessionRisk(sessionId, contribution, tenantId = "tenant_contoso") {
     const delta = Number(contribution || 0);
-    const result = await this.pool.query(
-      `INSERT INTO sessions (tenant_id, session_id, risk_consumed, updated_at)
-       VALUES ($1, $2, LEAST(100, $3), now())
-       ON CONFLICT (tenant_id, session_id)
-       DO UPDATE SET risk_consumed = LEAST(100, sessions.risk_consumed + $4), updated_at = now()
-       RETURNING risk_consumed`,
-      [tenantId, sessionId, Math.min(100, delta), delta]
-    );
-    return result.rows[0].risk_consumed;
+    return this.withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `INSERT INTO sessions (tenant_id, session_id, risk_consumed, updated_at)
+         VALUES ($1, $2, LEAST(100, $3), now())
+         ON CONFLICT (tenant_id, session_id)
+         DO UPDATE SET risk_consumed = LEAST(100, sessions.risk_consumed + $4), updated_at = now()
+         RETURNING risk_consumed`,
+        [tenantId, sessionId, Math.min(100, delta), delta]
+      );
+      return result.rows[0].risk_consumed;
+    });
   }
 
   async getAllSessions() {
-    const result = await this.pool.query("SELECT tenant_id, session_id, risk_consumed FROM sessions");
-    return Object.fromEntries(
-      result.rows.map((row) => [
-        `${row.tenant_id}:${row.session_id}`,
-        { tenant_id: row.tenant_id, session_id: row.session_id, risk_consumed: row.risk_consumed }
-      ])
-    );
+    return this.withTenant("*", async (client) => {
+      const result = await client.query("SELECT tenant_id, session_id, risk_consumed FROM sessions");
+      return Object.fromEntries(
+        result.rows.map((row) => [
+          `${row.tenant_id}:${row.session_id}`,
+          { tenant_id: row.tenant_id, session_id: row.session_id, risk_consumed: row.risk_consumed }
+        ])
+      );
+    });
   }
 
   async getAllBehaviorProfiles() {
-    const result = await this.pool.query("SELECT body FROM behavior_profiles");
-    return Object.fromEntries(result.rows.map((row) => [`${row.body.tenant_id}:${row.body.agent_id}`, row.body]));
+    return this.withTenant("*", async (client) => {
+      const result = await client.query("SELECT body FROM behavior_profiles");
+      return Object.fromEntries(result.rows.map((row) => [`${row.body.tenant_id}:${row.body.agent_id}`, row.body]));
+    });
   }
 
   async recordDecision(verdict) {
@@ -317,10 +349,14 @@ export class PostgresStore extends Store {
       ALTER TABLE policies FORCE ROW LEVEL SECURITY;
       ALTER TABLE policy_versions ENABLE ROW LEVEL SECURITY;
       ALTER TABLE policy_versions FORCE ROW LEVEL SECURITY;
+      ALTER TABLE behavior_profiles ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE behavior_profiles FORCE ROW LEVEL SECURITY;
+      ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE sessions FORCE ROW LEVEL SECURITY;
       ALTER TABLE evidence_ledger ENABLE ROW LEVEL SECURITY;
       ALTER TABLE evidence_ledger FORCE ROW LEVEL SECURITY;
     `);
-    for (const table of ["tenants", "agents", "missions", "approvals", "policies", "policy_versions"]) {
+    for (const table of ["tenants", "agents", "missions", "approvals", "policies", "policy_versions", "behavior_profiles", "sessions"]) {
       await this.pool.query(`
         DROP POLICY IF EXISTS ${table}_scopezero_tenant_isolation ON ${table};
         CREATE POLICY ${table}_scopezero_tenant_isolation ON ${table}

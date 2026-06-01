@@ -56,6 +56,30 @@ CREATE TABLE IF NOT EXISTS scopezero_state (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Hot-path state: written on every tool call, kept off the full-state blob and
+-- the global write lock so concurrent evaluations scale past single-writer.
+CREATE TABLE IF NOT EXISTS behavior_profiles (
+  tenant_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  body JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, agent_id)
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  tenant_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  risk_consumed DOUBLE PRECISION NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, session_id)
+);
+
+-- Global aggregate counters (not tenant-scoped); atomic increments.
+CREATE TABLE IF NOT EXISTS metrics (
+  name TEXT PRIMARY KEY,
+  value BIGINT NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS scopezero_write_locks (
   id TEXT PRIMARY KEY,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -88,6 +112,10 @@ ALTER TABLE policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE policies FORCE ROW LEVEL SECURITY;
 ALTER TABLE policy_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE policy_versions FORCE ROW LEVEL SECURITY;
+ALTER TABLE behavior_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE behavior_profiles FORCE ROW LEVEL SECURITY;
+ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sessions FORCE ROW LEVEL SECURITY;
 ALTER TABLE evidence_ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE evidence_ledger FORCE ROW LEVEL SECURITY;
 
@@ -118,6 +146,16 @@ CREATE POLICY policies_scopezero_tenant_isolation ON policies
 
 DROP POLICY IF EXISTS policy_versions_scopezero_tenant_isolation ON policy_versions;
 CREATE POLICY policy_versions_scopezero_tenant_isolation ON policy_versions
+  USING (tenant_id = current_setting('scopezero.tenant_id', true) OR current_setting('scopezero.tenant_id', true) = '*')
+  WITH CHECK (tenant_id = current_setting('scopezero.tenant_id', true) OR current_setting('scopezero.tenant_id', true) = '*');
+
+DROP POLICY IF EXISTS behavior_profiles_scopezero_tenant_isolation ON behavior_profiles;
+CREATE POLICY behavior_profiles_scopezero_tenant_isolation ON behavior_profiles
+  USING (tenant_id = current_setting('scopezero.tenant_id', true) OR current_setting('scopezero.tenant_id', true) = '*')
+  WITH CHECK (tenant_id = current_setting('scopezero.tenant_id', true) OR current_setting('scopezero.tenant_id', true) = '*');
+
+DROP POLICY IF EXISTS sessions_scopezero_tenant_isolation ON sessions;
+CREATE POLICY sessions_scopezero_tenant_isolation ON sessions
   USING (tenant_id = current_setting('scopezero.tenant_id', true) OR current_setting('scopezero.tenant_id', true) = '*')
   WITH CHECK (tenant_id = current_setting('scopezero.tenant_id', true) OR current_setting('scopezero.tenant_id', true) = '*');
 

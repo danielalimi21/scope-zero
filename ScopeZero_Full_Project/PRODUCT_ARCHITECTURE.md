@@ -47,7 +47,7 @@ The core product primitive is the **Mission Action Contract**: a signed, short-l
     `src/secrets.js` provides encrypted local secret references. `src/telemetry.js` records OpenTelemetry-compatible spans and can export to an OTLP collector.
 
 13. **Command Center UI**
-    `index.html`, `styles.css`, and `app.js` show the attack simulation, runtime policy state, evidence room, pitch room, and product story.
+    `index.html`, `styles.css`, and `app.js` show the runtime policy state, action simulation, connector status, and evidence trail.
 
 ## Runtime Flow
 
@@ -85,7 +85,7 @@ The core product primitive is the **Mission Action Contract**: a signed, short-l
 
 ## Enterprise Deployment Surface
 
-ScopeZero now includes the main pieces an enterprise buyer expects to see in a serious pilot:
+ScopeZero includes the core surfaces expected for enterprise deployment evaluation:
 
 | Enterprise Need | Project Surface |
 | --- | --- |

@@ -15,6 +15,9 @@ ScopeZero_Full_Project/data/*.db-*
 ScopeZero_Full_Project/data/*.sqlite
 ScopeZero_Full_Project/data/*.sqlite-*
 ScopeZero_Full_Project/data/*.log
+ScopeZero_Full_Project/data/ledger.jsonl
+ScopeZero_Full_Project/data/state.json
+ScopeZero_Full_Project/*_REPORT.md
 
 # Local/generated archives
 *.zip

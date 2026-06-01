@@ -38,7 +38,7 @@ Pilot success criteria:
 - risky calls block or quarantine
 - evidence exports to SIEM
 - ledger verifies
-- CISO can replay the incident path
+- security team can replay the incident path
 
 ## Phase 4: Expansion
 
@@ -51,4 +51,3 @@ Expand to:
 - SOC dashboards
 - production Postgres
 - high availability deployment
-

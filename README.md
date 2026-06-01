@@ -6,26 +6,16 @@ IAM decides whether an agent has access. ScopeZero decides whether the exact aut
 
 ## Repository Contents
 
-- `ScopeZero_Full_Project/` - runtime gateway, policy engine, connectors, SDK, tests, docs, examples, and deployment manifests.
-- `ScopeZero_CISO_Buyer_Packet/` - professional buyer packet with an interactive demo in `demo/index.html`.
-- `ScopeZero_Founder_Sales_Playbook.md` - internal founder sales strategy and outreach guidance.
+- `ScopeZero_Full_Project/` - runtime gateway, policy engine, connectors, SDK, tests, examples, and deployment manifests.
 
-## Run The Product Demo
-
-Open:
-
-```text
-ScopeZero_CISO_Buyer_Packet/demo/index.html
-```
-
-Or run the gateway:
+## Run Locally
 
 ```bash
 cd ScopeZero_Full_Project
 node server.js --port=8788
 ```
 
-Then open:
+Open:
 
 ```text
 http://localhost:8788
@@ -39,6 +29,6 @@ npm run check
 npm test
 ```
 
-## Positioning
+## Core Idea
 
-ScopeZero sits between autonomous agents and enterprise tools. Every requested tool call is checked against mission, policy, data, destination, risk, and approval rules before GitHub, Slack, AWS, SaaS, APIs, or MCP tools are allowed to run.
+ScopeZero sits between autonomous agents and enterprise tools. Every requested tool call is checked against mission, policy, data class, destination, risk, connector manifest, and approval rules before GitHub, Slack, AWS, SaaS APIs, or MCP tools are allowed to run.

@@ -92,8 +92,8 @@ button {
 .request-list dd,
 .agent-intent p,
 .check-row p,
-.buyer-summary p,
-.buyer-summary li {
+.decision-summary p,
+.decision-summary li {
   color: var(--muted);
   font-style: normal;
   line-height: 1.6;
@@ -345,7 +345,7 @@ h3 {
 .engine-steps article,
 .agent-intent,
 .result-box,
-.buyer-summary,
+.decision-summary,
 .evidence-code {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -544,11 +544,11 @@ h3 {
   font-size: 0.9rem;
 }
 
-.buyer-summary {
+.decision-summary {
   padding: 20px;
 }
 
-.buyer-summary ul {
+.decision-summary ul {
   padding-left: 20px;
 }
 

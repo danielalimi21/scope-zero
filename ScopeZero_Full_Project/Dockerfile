@@ -18,7 +18,7 @@ COPY tools ./tools
 COPY tests ./tests
 COPY db ./db
 COPY k8s ./k8s
-COPY README.md PRODUCT_ARCHITECTURE.md SECURITY_REVIEW.md SEND_TO_COMPANIES.md SCOPEZERO_FULL_OVERVIEW.md ./
+COPY README.md PRODUCT_ARCHITECTURE.md SECURITY_REVIEW.md ACTION_AUTHORIZATION.md AATP.md CONTROL_MATRIX.md ./
 
 RUN mkdir -p /app/data /app/logs && chown -R scopezero:scopezero /app
 

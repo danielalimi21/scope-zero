@@ -77,31 +77,11 @@ node tools/smoke-test.js
 node examples/malicious-diligence-agent.js
 node tools/verify-ledger.js
 node tools/config-check.js
-npm run proof:ciso
 npm run pilot:local
 ```
 
 The smoke test validates health, auth, connectors, policy proposal approval, MCP authorization, action authorization, and SIEM export.
-The local pilot runs a fuller buyer-style scenario matrix and writes `LOCAL_PILOT_REPORT.md`.
-
-## CISO Proof Run
-
-The strongest demo path is the full CISO proof run:
-
-```bash
-npm run proof:ciso
-```
-
-It runs six buyer-facing checks:
-
-- GitHub safe PR allowed.
-- GitHub dangerous PR blocked before GitHub execution.
-- Slack safe message allowed.
-- Slack sensitive/prompt-influenced message blocked before Slack execution.
-- AWS IAM admin escalation blocked before execution.
-- AWS IAM policy change routed to human approval.
-
-It writes [CISO_PROOF_REPORT.md](CISO_PROOF_REPORT.md), including connector modes, decisions, artifacts, evidence hashes, and ledger verification.
+The local pilot runs a fuller workflow scenario matrix and writes a local report file.
 
 ## GitHub Connector Pilot
 
@@ -178,18 +158,6 @@ Expected result: ScopeZero blocks an attempted `AdministratorAccess` attachment 
 7. Open Evidence Room to show the hash-chained forensic record.
 8. Run `node examples/malicious-diligence-agent.js` to prove the same story through the SDK and live gateway APIs.
 
-## CISO GitHub Demo
-
-For the strongest buyer demo, use the dedicated `GitHub Demo` tab in the browser app.
-
-It proves the core thesis against a real external tool:
-
-- ScopeZero allows a safe documentation-only GitHub draft PR.
-- ScopeZero blocks a dangerous GitHub PR attempt before GitHub is called.
-- The evidence hash is shown in the UI and sealed in the ledger.
-
-See [CISO_DEMO_RUNBOOK.md](CISO_DEMO_RUNBOOK.md).
-
 ## Core APIs
 
 - `GET /v1/health`
@@ -265,7 +233,6 @@ See [config/production.env.example](config/production.env.example), [k8s](k8s), 
 - [src/telemetry.js](src/telemetry.js) - OpenTelemetry-compatible traces.
 - [sdk/scopezero-sdk.js](sdk/scopezero-sdk.js) - agent SDK.
 - [examples/malicious-diligence-agent.js](examples/malicious-diligence-agent.js) - live end-to-end demo.
-- [tools/ciso-proof-run.js](tools/ciso-proof-run.js) - full GitHub, Slack, and AWS CISO proof run.
 - [tools/github-connector-pilot.js](tools/github-connector-pilot.js) - live GitHub connector pilot.
 - [tools/slack-connector-pilot.js](tools/slack-connector-pilot.js) - live Slack connector pilot.
 - [tools/aws-iam-pilot.js](tools/aws-iam-pilot.js) - safe AWS IAM privilege-change pilot.
@@ -274,35 +241,10 @@ See [config/production.env.example](config/production.env.example), [k8s](k8s), 
 - [.github/workflows/scopezero-ci.yml](.github/workflows/scopezero-ci.yml) - CI verification workflow.
 - [PRODUCT_ARCHITECTURE.md](PRODUCT_ARCHITECTURE.md) - technical architecture.
 - [SECURITY_REVIEW.md](SECURITY_REVIEW.md) - security review and threat model.
-- [SEND_TO_COMPANIES.md](SEND_TO_COMPANIES.md) - buyer and partner pitch.
-- [SCOPEZERO_FULL_OVERVIEW.md](SCOPEZERO_FULL_OVERVIEW.md) - full product overview.
-- [CISO_DEMO_RUNBOOK.md](CISO_DEMO_RUNBOOK.md) - buyer-facing live GitHub demo flow.
-- [CISO_PROOF_REPORT.md](CISO_PROOF_REPORT.md) - generated cross-tool buyer proof report.
-- [ENTERPRISE_READINESS_REPORT.md](ENTERPRISE_READINESS_REPORT.md) - generated diligence report.
-- [COMMERCIAL_READINESS.md](COMMERCIAL_READINESS.md) - what can be sold now and what still needs work.
-- [CUSTOMER_PILOT_PROPOSAL.md](CUSTOMER_PILOT_PROPOSAL.md) - paid pilot proposal template.
-- [PRICING_AND_PACKAGING.md](PRICING_AND_PACKAGING.md) - pricing and package strategy.
-- [BUYER_FAQ.md](BUYER_FAQ.md) - answers to buyer/security-team questions.
 - [GA_RELEASE_CHECKLIST.md](GA_RELEASE_CHECKLIST.md) - checklist before full general availability.
 
 ## Status
 
-ScopeZero is best described as a **commercial pilot product**: enough real gateway, policy, evidence, MCP, SDK, auth, deployment, tests, OpenAPI, and observability surface to pitch, demo, and run a paid controlled pilot.
+ScopeZero is an early product implementation: a runnable gateway, policy engine, evidence ledger, MCP proxy, SDK, auth layer, deployment scaffold, OpenAPI contract, observability surface, and automated tests.
 
 Before real customer production data, connect a real IdP, managed Postgres, enterprise SIEM, OTLP collector, secrets vault, distributed rate limiter, image signing, SBOM/dependency scanning, and external security testing.
-
-## What To Sell First
-
-Sell a narrow paid pilot:
-
-> ScopeZero will govern one autonomous agent workflow, block out-of-scope tool actions before execution, and produce SOC-ready evidence.
-
-Recommended first commercial offer:
-
-- 6-10 week controlled pilot
-- one internal agent workflow
-- two or three tools
-- one mission contract
-- one approval gate
-- one SIEM/evidence export
-- $50k-$150k depending on integration depth

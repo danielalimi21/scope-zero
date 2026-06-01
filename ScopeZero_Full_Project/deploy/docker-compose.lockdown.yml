@@ -1,0 +1,39 @@
+# Fail-closed egress without Kubernetes — see deploy/docker-egress-lockdown.md.
+# The agent sits on an internet-isolated network; its only route out is the
+# ScopeZero proxy. A raw socket to the internet has nowhere to route.
+#
+#   docker compose -f deploy/docker-compose.lockdown.yml up --build
+
+networks:
+  agents-internal:
+    internal: true      # kernel-enforced: no gateway to host/internet
+  egress:
+    driver: bridge      # internet-facing; only ScopeZero is attached here
+
+services:
+  scopezero:
+    build: ..
+    image: scopezero/runtime:0.1.0
+    networks: [agents-internal, egress]
+    environment:
+      PORT: "8788"
+      SCOPEZERO_REQUIRE_AUTH: "true"
+      SCOPEZERO_ALLOW_DEV_TOKEN: "true"
+      SCOPEZERO_SIGNING_SECRET: "replace-with-32-byte-signing-secret"
+      SCOPEZERO_AUTH_SECRET: "replace-with-32-byte-auth-secret"
+      SCOPEZERO_SECRETS_MASTER_KEY: "replace-with-32-byte-secrets-master-key"
+
+  # Example agent — internet-isolated, forced through the proxy. Swap the image
+  # for your own. With no token it is blocked; that's the point.
+  agent:
+    image: curlimages/curl:latest
+    networks: [agents-internal]
+    depends_on: [scopezero]
+    environment:
+      HTTP_PROXY:  "http://scopezero:8788"
+      HTTPS_PROXY: "http://scopezero:8788"
+      http_proxy:  "http://scopezero:8788"
+      https_proxy: "http://scopezero:8788"
+      NO_PROXY:    "localhost,127.0.0.1,scopezero"
+    # Demonstrates the lockdown: direct egress fails, only the proxy hop exists.
+    command: ["sh", "-c", "echo 'direct egress (should fail):'; curl -m5 https://example.com || echo BLOCKED; sleep infinity"]

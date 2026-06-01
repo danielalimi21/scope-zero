@@ -14,7 +14,7 @@ Existing answers don't fit. An egress proxy allow-lists hosts but knows nothing 
 
 ScopeZero issues a **signed mission capsule** before an agent runs: *this agent, delegated by this human, may use these tools, on this data class, to these destinations, until this timestamp.* Then it enforces that capsule at the layer an injected agent can't route around — **the network**, fail-closed at the kernel.
 
-- Agent egress is forced through ScopeZero by a Kubernetes **NetworkPolicy** (kernel-level — a raw socket can't skip it) plus admission webhooks that inject the proxy config and **reject pods that strip it** (`failurePolicy: Fail` → ScopeZero down means no new agent pods, not open ones).
+- Agent egress is forced through ScopeZero at the kernel — a raw socket can't skip it. On Kubernetes that's a **NetworkPolicy** + admission webhooks that inject the proxy config and **reject pods that strip it** (`failurePolicy: Fail` → ScopeZero down means no new agent pods, not open ones). **Not on Kubernetes?** A **Docker internal network** gives the same kernel-enforced block — the agent has no internet route except the proxy ([`deploy/docker-egress-lockdown.md`](deploy/docker-egress-lockdown.md)).
 - Every outbound HTTPS `CONNECT` is refused unless it's bound to a mission that is **signature-valid, unexpired, active, owned by the requesting agent, and whose contract permits the destination**. An expired or tampered mission opens nothing.
 - DNS is pinned to the cluster resolver, closing the obvious exfil side-channel.
 - Every decision — allow, block, redact, approval, quarantine — is written to a **hash-chained, HMAC-keyed ledger**. Edit one entry and verification breaks; you can't re-forge the chain without the signing secret.
@@ -36,14 +36,14 @@ npm run bench       # persistence hot-path throughput
 ## Architecture in five lines
 
 - **Mission capsule** (`src/capsules.js`) — HMAC-signed, TTL-bounded authorization token; vendor-neutral action contracts `(tool, operation, data_class, destination)`.
-- **Enforcement** — Layer 1 pre-exec gateway (SDK, action-level; fail-closed on block/approval *and* on gateway error, redact enforced via a redactor), Layer 2 HTTPS `CONNECT` proxy (mission-bound, destination-level), Layer 3 K8s NetworkPolicy + admission webhooks (kernel, fail-closed).
+- **Enforcement** — Layer 1 pre-exec gateway (SDK, action-level; fail-closed on block/approval *and* on gateway error, redact enforced via a redactor), Layer 2 HTTPS `CONNECT` proxy (mission-bound, destination-level), Layer 3 kernel egress block (K8s NetworkPolicy *or* Docker internal network, fail-closed).
 - **Ledger** (`src/ledger.js`) — append-only, HMAC-keyed hash chain, optional external anchoring.
 - **Defense-in-depth** — server-side data classification, evasion-resistant prompt-injection detection (homoglyph fold, letter-spacing/punctuation collapse, base64 — 100% recall / 0 false-positives on the adversarial corpus in `tests/prompt-injection-corpus.test.js`), a deterministic intent-drift screen (keyword-overlap heuristic — a fast first-pass signal, not semantic "understanding"), behavioral anomaly detection (incl. baseline-independent low-and-slow ceiling), MCP trust registry with scheduled CVE refresh, agent identity certs.
 - **Multi-tenant** — Postgres with row-level security (every tenant table, incl. hot-path); hot-path state (behavior, session risk, metrics) on per-row atomic upserts so the gateway scales past single-writer throughput. `npm run bench`: ~31k hot-path writes/sec with **0 full-state-blob rewrites** on the persistence layer.
 
 ## Honest scope (what's enforcement vs. governance)
 
-The network layer is *containment* and only as strong as the K8s NetworkPolicy being applied — that's the hard, demoable guarantee, and the pitch leads with it. Tunneled HTTPS is enforced at destination + live-mission granularity, not per-request action (TLS bodies are opaque) — per-action enforcement is the SDK layer's job. Recursive DNS-tunnel prevention needs a filtering resolver (pinning to kube-dns kills the direct path; the rest is roadmap). We say this out loud because a security product that overclaims is worse than one that's precise.
+The network layer is *containment* and only as strong as the kernel egress block being applied (K8s NetworkPolicy or Docker internal network) — that's the hard, demoable guarantee, and the pitch leads with it. Bare SDK with no network lockdown is governance/audit only; we label it as such. Tunneled HTTPS is enforced at destination + live-mission granularity, not per-request action (TLS bodies are opaque) — per-action enforcement is the SDK layer's job. Recursive DNS-tunnel prevention needs a filtering resolver (pinning to kube-dns kills the direct path; the rest is roadmap). We say this out loud because a security product that overclaims is worse than one that's precise.
 
 ## Threat coverage
 

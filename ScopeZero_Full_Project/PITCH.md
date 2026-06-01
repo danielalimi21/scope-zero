@@ -45,6 +45,13 @@ npm run bench       # persistence hot-path throughput
 
 The network layer is *containment* and only as strong as the K8s NetworkPolicy being applied — that's the hard, demoable guarantee, and the pitch leads with it. Tunneled HTTPS is enforced at destination + live-mission granularity, not per-request action (TLS bodies are opaque) — per-action enforcement is the SDK layer's job. Recursive DNS-tunnel prevention needs a filtering resolver (pinning to kube-dns kills the direct path; the rest is roadmap). We say this out loud because a security product that overclaims is worse than one that's precise.
 
+## Threat coverage
+
+Mapped to OWASP Top 10 for LLM Applications (2025) and MITRE ATLAS in
+[`SECURITY_COVERAGE.md`](SECURITY_COVERAGE.md) — strong on the slice ScopeZero
+owns (Excessive Agency, Sensitive-Info Disclosure, Prompt-Injection containment,
+Unbounded Consumption), honest about what's another layer's job.
+
 ## The line
 
 **Adopt ScopeZero and an injected agent is contained at the kernel, bound to a signed mission, and provable to your auditor. Skip it and you're trusting that your agents never read anything malicious. They will.**

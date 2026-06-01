@@ -12,6 +12,7 @@ import { contentTypeForSiem, exportEvents } from "./src/siem.js";
 import { Telemetry } from "./src/telemetry.js";
 import { createApprovalNotifierFromEnv } from "./src/approvalNotifier.js";
 import { enforceTenant } from "./src/tenantGuard.js";
+import { generateComplianceReport } from "./src/complianceReport.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -263,6 +264,27 @@ async function handleApi(req, res, url) {
     const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
     auth.authorize(principal, "ledger:read", tenantId);
     return sendJson(res, 200, complianceControls({ tenantId }));
+  }
+
+  if (req.method === "GET" && url.pathname === "/v1/compliance/report") {
+    const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "ledger:read", tenantId);
+    const format = url.searchParams.get("format") || "json";
+    const from = url.searchParams.get("from") || null;
+    const to = url.searchParams.get("to") || null;
+    const report = await generateComplianceReport({
+      ledger: runtime.ledger,
+      store: runtime.store,
+      tenantId,
+      from,
+      to,
+      format
+    });
+    if (format === "html") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      return res.end(report);
+    }
+    return sendJson(res, 200, report);
   }
 
   if (req.method === "GET" && url.pathname === "/v1/connectors") {

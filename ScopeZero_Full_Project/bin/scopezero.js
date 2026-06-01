@@ -43,6 +43,7 @@ Usage:
   scopezero approvals
   scopezero approval approve <id> [--actor <email>]
   scopezero approval deny <id> [--actor <email>]
+  scopezero report [--tenant <id>] [--from <iso-date>] [--to <iso-date>] [--format json|html]
 
 Environment:
   SCOPEZERO_URL      Gateway URL (default: http://localhost:8788)
@@ -68,7 +69,10 @@ const { values, positionals } = parseArgs({
     mission:   { type: "string" },
     tool:      { type: "string" },
     action:    { type: "string" },
-    actor:     { type: "string" }
+    actor:     { type: "string" },
+    from:      { type: "string" },
+    to:        { type: "string" },
+    format:    { type: "string" }
   },
   allowPositionals: true,
   strict: false
@@ -168,6 +172,27 @@ switch (command) {
     out(await api("POST", `/v1/approvals/${encodeURIComponent(id)}/${subcommand}`, {
       actor: values.actor || "cli.operator"
     }));
+    break;
+  }
+
+  case "report": {
+    const tenant = values.tenant || "tenant_contoso";
+    const params = new URLSearchParams({ tenant_id: tenant, format: values.format || "json" });
+    if (values.from) params.set("from", values.from);
+    if (values.to) params.set("to", values.to);
+    const fmt = values.format || "json";
+    const headers = { "content-type": "application/json" };
+    if (API_KEY) headers.authorization = `Bearer ${API_KEY}`;
+    const res = await fetch(`${BASE_URL}/v1/compliance/report?${params}`, { headers });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      fail(err?.error?.message || `HTTP ${res.status}`);
+    }
+    if (fmt === "html") {
+      process.stdout.write(await res.text());
+    } else {
+      out(await res.json());
+    }
     break;
   }
 

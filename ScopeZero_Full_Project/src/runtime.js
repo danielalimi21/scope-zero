@@ -10,6 +10,9 @@ import { createLedgerAnchorFromEnv } from "./ledgerAnchor.js";
 import { PostgresStore } from "./postgresStore.js";
 import { Store } from "./store.js";
 import { validateChainForNewMission, resolveChain, buildChainForest, describeChain } from "./agentChain.js";
+import { analyzeToolCallBehavior, createEmptyProfile, updateBehaviorProfile } from "./behaviorAnalyzer.js";
+import { assessMcpCall, buildMcpServerRecord, isValidTrustLevel, computeTrustDecay, queryOsvVulnerabilities, applyTrustSignals } from "./mcpTrustRegistry.js";
+import { issueAgentCertificate, verifyAgentCertificate, verifyCertIdentity } from "./agentCert.js";
 
 export async function createRuntime({ rootDir, signingSecret, toolManifestResolver = null, approvalNotifier = null }) {
   const defaultPolicy = JSON.parse(await readFile(new URL("../config/defaultPolicy.json", import.meta.url), "utf8"));
@@ -49,6 +52,44 @@ export class ScopeZeroRuntime {
     await this.store.upsertAgent(agent);
     await this.ledger.append({ event_type: "agent.registered", agent });
     return agent;
+  }
+
+  async issueAgentCert(input) {
+    requireFields(input, ["tenant_id", "agent_id"]);
+    const agent = this.store.getAgent(input.tenant_id, input.agent_id);
+    if (!agent) throw httpError(404, "unknown_agent", "Agent is not registered.");
+    const cert = issueAgentCertificate(agent, this.signingSecret, {
+      ttlMs: input.ttl_ms || undefined
+    });
+    await this.store.addAgentCert(cert);
+    const evidence = await this.ledger.append({
+      event_type: "agent_cert.issued",
+      cert_id: cert.cert_id,
+      tenant_id: cert.tenant_id,
+      agent_id: cert.agent_id,
+      fingerprint: cert.fingerprint,
+      expires_at: cert.expires_at
+    });
+    return { cert, evidence };
+  }
+
+  async revokeAgentCert({ cert_id, revoked_by, reason, tenant_id = null }) {
+    requireFields({ cert_id }, ["cert_id"]);
+    const cert = await this.store.revokeCert(cert_id, { revoked_by, reason, tenant_id });
+    if (!cert) throw httpError(404, "unknown_cert", `Certificate ${cert_id} not found.`);
+    const evidence = await this.ledger.append({
+      event_type: "agent_cert.revoked",
+      cert_id,
+      tenant_id: cert.tenant_id,
+      agent_id: cert.agent_id,
+      revoked_by: cert.revoked_by,
+      reason: cert.revocation_reason
+    });
+    return { cert, evidence };
+  }
+
+  listAgentCerts({ tenant_id, agent_id }) {
+    return this.store.listAgentCerts(tenant_id, agent_id);
   }
 
   async createMission(input) {
@@ -215,6 +256,65 @@ export class ScopeZeroRuntime {
       this.writeDecisionCache(cacheKey, verdict, policy);
     }
 
+    // Agent certificate verification
+    if (input.agent_cert_id) {
+      const cert = this.store.getAgentCert(input.agent_cert_id);
+      let certResult;
+      if (!cert) {
+        certResult = { valid: false, code: "cert-not-found", message: `Certificate ${input.agent_cert_id} not found.` };
+      } else {
+        certResult = verifyAgentCertificate(cert, this.signingSecret);
+        if (certResult.valid) {
+          const identityCheck = verifyCertIdentity(cert, input.agent_id, input.tenant_id);
+          if (!identityCheck.valid) certResult = identityCheck;
+        }
+      }
+      verdict.cert_verification = certResult;
+      if (!certResult.valid) {
+        verdict.reasons.push({ code: certResult.code, message: certResult.message, source: "agent_cert" });
+        if (policy.require_agent_cert) {
+          verdict.decision = "block";
+          verdict.safe_to_execute = false;
+          verdict.risk_score = Math.min(100, (verdict.risk_score || 0) + 30);
+          verdict.controls = [...(verdict.controls || []), "agent_cert_enforcement"];
+          verdict.required_action = "deny_before_execution";
+        }
+      } else {
+        verdict.controls = [...(verdict.controls || []), "agent_cert_verified"];
+      }
+    } else if (policy.require_agent_cert) {
+      const nocert = { valid: false, code: "cert-required", message: "Policy requires an agent certificate but none was provided." };
+      verdict.cert_verification = nocert;
+      verdict.reasons.push({ code: nocert.code, message: nocert.message, source: "agent_cert" });
+      verdict.decision = "block";
+      verdict.safe_to_execute = false;
+      verdict.risk_score = Math.min(100, (verdict.risk_score || 0) + 30);
+      verdict.controls = [...(verdict.controls || []), "agent_cert_enforcement"];
+      verdict.required_action = "deny_before_execution";
+    }
+
+    // Behavioral anomaly detection — runs on every non-cached path and cache hits alike
+    const now = new Date();
+    const behaviorProfile = this.store.getBehaviorProfile(input.tenant_id, input.agent_id)
+      || createEmptyProfile(input.tenant_id, input.agent_id);
+    const { anomalies, risk_delta } = analyzeToolCallBehavior(behaviorProfile, input.tool, now);
+    if (anomalies.length > 0) {
+      verdict.behavioral_anomalies = anomalies;
+      verdict.risk_score = Math.min(100, (verdict.risk_score || 0) + risk_delta);
+      for (const anomaly of anomalies) {
+        verdict.reasons.push({ code: anomaly.code, message: anomaly.message, source: "behavioral_anomaly" });
+      }
+      const hasHighSeverity = anomalies.some(a => a.severity === "high");
+      if (hasHighSeverity && verdict.decision === "allow") {
+        verdict.decision = "approval";
+        verdict.required_action = "human_approval_required";
+        verdict.safe_to_execute = false;
+        verdict.controls = [...(verdict.controls || []), "behavioral_anomaly_escalation"];
+      }
+    }
+    updateBehaviorProfile(behaviorProfile, input.tool, now);
+    await this.store.recordToolCall(input.tenant_id, input.agent_id, input.tool, behaviorProfile);
+
     const sessionRisk = await this.store.updateSessionRisk(sessionId, verdict.risk_contribution, input.tenant_id);
     verdict.session_risk = sessionRisk;
 
@@ -309,6 +409,123 @@ export class ScopeZeroRuntime {
       proposal: withoutPolicyBody(proposal)
     });
     return { proposal, evidence };
+  }
+
+  async registerMcpServer(input) {
+    const server = buildMcpServerRecord(input);
+    await this.store.upsertMcpServer(server);
+    const evidence = await this.ledger.append({ event_type: "mcp_trust.server_registered", server_id: server.server_id, trust_level: server.trust_level, tenant_id: server.tenant_id });
+    return { server, evidence };
+  }
+
+  async updateMcpServerTrust({ server_id, trust_level, reviewed_by, tenant_id = null }) {
+    if (!isValidTrustLevel(trust_level)) {
+      throw httpError(400, "invalid_trust_level", `Trust level must be one of: verified, community, unverified, blocked.`);
+    }
+    const server = this.store.getMcpServer(server_id, tenant_id);
+    if (!server) throw httpError(404, "unknown_mcp_server", `MCP server "${server_id}" not found.`);
+    const previous = server.trust_level;
+    server.trust_level = trust_level;
+    if (trust_level === "verified") {
+      server.verified_at = nowIso();
+      server.verified_by = reviewed_by || "security.operator@scopezero.local";
+    }
+    server.last_reviewed_at = nowIso();
+    server.last_reviewed_by = reviewed_by || "security.operator@scopezero.local";
+    await this.store.upsertMcpServer(server);
+    const evidence = await this.ledger.append({
+      event_type: "mcp_trust.updated",
+      server_id,
+      tenant_id,
+      previous_trust: previous,
+      new_trust: trust_level,
+      reviewed_by: server.last_reviewed_by
+    });
+    return { server, evidence };
+  }
+
+  async refreshMcpServerTrust({ server_id, tenant_id = null, fetchFn = undefined }) {
+    const server = this.store.getMcpServer(server_id, tenant_id);
+    if (!server) throw httpError(404, "unknown_mcp_server", `MCP server "${server_id}" not found.`);
+    const now = new Date();
+    const decay = computeTrustDecay(server, now);
+    const osvResult = server.package_name
+      ? await queryOsvVulnerabilities(server.package_name, server.package_ecosystem || "npm", fetchFn)
+      : { vulns: [], error: null };
+    applyTrustSignals(server, decay, osvResult, now);
+    await this.store.upsertMcpServer(server);
+    const evidence = await this.ledger.append({
+      event_type: "mcp_trust.refreshed",
+      server_id,
+      tenant_id,
+      trust_signals: server.trust_signals,
+      demoted: decay?.demoted || false
+    });
+    return { server, evidence };
+  }
+
+  async evaluateMcpToolCall(input) {
+    requireFields(input, ["tenant_id", "agent_id", "mission_id", "server_id", "tool"]);
+    const server = this.store.getMcpServer(input.server_id, input.tenant_id);
+    const assessment = assessMcpCall({
+      server,
+      toolName: input.tool,
+      currentDecision: "allow"
+    });
+
+    if (assessment.block) {
+      const evidence = await this.ledger.append({
+        event_type: "mcp_trust.blocked",
+        tenant_id: input.tenant_id,
+        agent_id: input.agent_id,
+        server_id: input.server_id,
+        tool: input.tool,
+        trust_level: "blocked"
+      });
+      return {
+        decision: "block",
+        safe_to_execute: false,
+        mcp_trust: { server_id: input.server_id, trust_level: "blocked", risk_delta: 100, server_name: server?.name || null },
+        verdict: {
+          decision: "block",
+          risk_score: 100,
+          risk_contribution: 8,
+          reasons: [assessment.reason],
+          controls: ["mcp_trust_block"],
+          safe_to_execute: false,
+          required_action: "deny_before_execution"
+        },
+        evidence_hash: evidence.hash
+      };
+    }
+
+    const result = await this.evaluateToolCall({
+      ...input,
+      action: input.action || `MCP call ${input.server_id}/${input.tool}`,
+      mcp_server_id: input.server_id,
+      mcp_trust_level: assessment.trust.trust_level
+    });
+
+    if (assessment.trust.risk_delta > 0) {
+      result.verdict.risk_score = Math.min(100, (result.verdict.risk_score || 0) + assessment.trust.risk_delta);
+      result.verdict.reasons.push(assessment.reason);
+      if (assessment.escalate) {
+        result.verdict.decision = "approval";
+        result.verdict.required_action = "human_approval_required";
+        result.verdict.safe_to_execute = false;
+        result.verdict.controls = [...(result.verdict.controls || []), "mcp_trust_escalation"];
+        result.decision = "approval";
+      }
+    }
+
+    result.mcp_trust = {
+      server_id: input.server_id,
+      trust_level: assessment.trust.trust_level,
+      risk_delta: assessment.trust.risk_delta,
+      server_name: server?.name || null
+    };
+
+    return result;
   }
 
   async state({ limit = 25 } = {}) {

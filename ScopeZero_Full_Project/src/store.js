@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createId, nowIso, sha256, stableStringify } from "./crypto.js";
+import { buildMcpServerRecord, WELL_KNOWN_MCP_SERVERS } from "./mcpTrustRegistry.js";
 
 export class Store {
   constructor(dbPath, defaultPolicy) {
@@ -320,6 +321,80 @@ export class Store {
     return this.state.sessions[`${tenantId}:${sessionId}`]?.risk_consumed || 0;
   }
 
+  getBehaviorProfile(tenantId, agentId) {
+    const key = `${tenantId}:${agentId}`;
+    return this.state.behavior_profiles[key] || null;
+  }
+
+  async recordToolCall(tenantId, agentId, toolKey, profile) {
+    const key = `${tenantId}:${agentId}`;
+    this.state.behavior_profiles[key] = profile;
+    await this.save();
+  }
+
+  getMcpServer(serverId, tenantId = null) {
+    const all = this.state.mcp_servers || [];
+    // tenant-specific first, then global
+    return (
+      all.find(s => s.server_id === serverId && s.tenant_id === tenantId) ||
+      all.find(s => s.server_id === serverId && s.tenant_id === null) ||
+      null
+    );
+  }
+
+  listMcpServers({ tenantId = null, trustLevel = null } = {}) {
+    const all = this.state.mcp_servers || [];
+    return all.filter(s => {
+      const tenantMatch = s.tenant_id === null || s.tenant_id === tenantId;
+      const levelMatch = !trustLevel || s.trust_level === trustLevel;
+      return tenantMatch && levelMatch;
+    });
+  }
+
+  async upsertMcpServer(server) {
+    this.state.mcp_servers ||= [];
+    const idx = this.state.mcp_servers.findIndex(
+      s => s.server_id === server.server_id && s.tenant_id === server.tenant_id
+    );
+    if (idx >= 0) {
+      this.state.mcp_servers[idx] = { ...this.state.mcp_servers[idx], ...server };
+    } else {
+      this.state.mcp_servers.push(server);
+    }
+    await this.save();
+    return this.state.mcp_servers[idx >= 0 ? idx : this.state.mcp_servers.length - 1];
+  }
+
+  getAgentCert(certId) {
+    return (this.state.agent_certs || []).find(c => c.cert_id === certId) || null;
+  }
+
+  listAgentCerts(tenantId, agentId) {
+    return (this.state.agent_certs || []).filter(
+      c => c.tenant_id === tenantId && (!agentId || c.agent_id === agentId)
+    );
+  }
+
+  async addAgentCert(cert) {
+    this.state.agent_certs ||= [];
+    this.state.agent_certs.push(cert);
+    await this.save();
+    return cert;
+  }
+
+  async revokeCert(certId, { revoked_by, reason, tenant_id = null }) {
+    const cert = (this.state.agent_certs || []).find(
+      c => c.cert_id === certId && (!tenant_id || c.tenant_id === tenant_id)
+    );
+    if (!cert) return null;
+    cert.status = "revoked";
+    cert.revoked_at = nowIso();
+    cert.revoked_by = revoked_by || "security.operator@scopezero.local";
+    cert.revocation_reason = reason || "unspecified";
+    await this.save();
+    return cert;
+  }
+
   assertTenant(tenantId) {
     if (!this.getTenant(tenantId)) {
       throw new Error(`Unknown tenant: ${tenantId}`);
@@ -368,6 +443,9 @@ function createSeedState(defaultPolicy) {
       }
     ],
     sessions: {},
+    behavior_profiles: {},
+    mcp_servers: WELL_KNOWN_MCP_SERVERS.map(s => buildMcpServerRecord(s)),
+    agent_certs: [],
     policies: {
       tenant_contoso: defaultPolicy
     },

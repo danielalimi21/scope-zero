@@ -1,4 +1,5 @@
 import http from "node:http";
+import net from "node:net";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,8 @@ import { Telemetry } from "./src/telemetry.js";
 import { createApprovalNotifierFromEnv } from "./src/approvalNotifier.js";
 import { enforceTenant } from "./src/tenantGuard.js";
 import { generateComplianceReport } from "./src/complianceReport.js";
+import { parseProxyAuth, parseConnectTarget, isDestinationAllowed, buildDeploymentLockdown } from "./src/proxyEnforcer.js";
+import { handleValidateAdmission, handleMutateAdmission, generateFullEnforcementManifests } from "./src/k8sAdmission.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -105,6 +108,61 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`ScopeZero Gateway listening on http://localhost:${PORT}`);
+});
+
+// HTTP CONNECT proxy — intercepts HTTPS tunnels when agents run with HTTP_PROXY set.
+// Agent must send:  Proxy-Authorization: Bearer <jwt>
+server.on("connect", async (req, clientSocket, head) => {
+  const proxyAuth = parseProxyAuth(req);
+  const { host, port } = parseConnectTarget(req.url || "");
+
+  let allowed = false;
+  let blockReason = "no_proxy_auth";
+  let mission = null;
+
+  if (proxyAuth) {
+    try {
+      // Resolve principal from JWT bearer token
+      const principal = proxyAuth.type === "bearer"
+        ? auth.verify(proxyAuth.token)
+        : { tenant_id: proxyAuth.tenant_id, agent_id: proxyAuth.agent_id, subject: proxyAuth.agent_id };
+
+      const tenantId = principal.tenant_id || "tenant_contoso";
+      const missionId = principal.mission_id || (proxyAuth.type === "mission" ? proxyAuth.mission_id : null);
+      mission = missionId ? runtime.store.getMission(missionId, tenantId) : null;
+      allowed = isDestinationAllowed(host, mission);
+      if (!allowed) blockReason = "destination_not_in_mission_contract";
+
+      await runtime.ledger.append({
+        event_type: allowed ? "proxy.connect.allowed" : "proxy.connect.blocked",
+        host, port,
+        tenant_id: tenantId,
+        agent_id: principal.agent_id || null,
+        mission_id: missionId,
+        reason: allowed ? null : blockReason
+      });
+    } catch {
+      blockReason = "auth_failed";
+    }
+  }
+
+  if (!allowed) {
+    clientSocket.write(
+      `HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n` +
+      JSON.stringify({ error: "scopezero_proxy_blocked", host, reason: blockReason })
+    );
+    clientSocket.destroy();
+    return;
+  }
+
+  const serverSocket = net.connect(port, host, () => {
+    clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (head?.length) serverSocket.write(head);
+    serverSocket.pipe(clientSocket);
+    clientSocket.pipe(serverSocket);
+  });
+  serverSocket.on("error", () => clientSocket.destroy());
+  clientSocket.on("error", () => serverSocket.destroy());
 });
 
 async function handleApi(req, res, url) {
@@ -260,6 +318,42 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { traces: telemetry.snapshot({ limit: Number(url.searchParams.get("limit") || 50) }) });
   }
 
+  if (req.method === "GET" && url.pathname === "/v1/deployment/lockdown") {
+    const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "tenant:read", tenantId);
+    const proxyHost = url.searchParams.get("proxy_host") || req.headers["host"]?.split(":")[0] || "scopezero";
+    return sendJson(res, 200, buildDeploymentLockdown({ proxyHost, proxyPort: PORT }));
+  }
+
+  // Kubernetes enforcement manifests (NetworkPolicy + MutatingWebhook + ValidatingWebhook)
+  if (req.method === "GET" && url.pathname === "/v1/deployment/k8s-manifests") {
+    const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "tenant:read", tenantId);
+    const serviceHost = url.searchParams.get("service_host") || req.headers["host"]?.split(":")[0] || "scopezero";
+    const namespace = url.searchParams.get("namespace") || "default";
+    const caBundle = url.searchParams.get("ca_bundle") || "";
+    return sendJson(res, 200, {
+      description: "Apply all three manifests to enforce ScopeZero as the mandatory network gateway. failurePolicy: Fail on both webhooks means ScopeZero going down prevents new agent pods from starting.",
+      apply_order: ["NetworkPolicy", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration"],
+      manifests: generateFullEnforcementManifests({ serviceHost, servicePort: PORT, namespace, caBundle })
+    });
+  }
+
+  // Kubernetes admission webhook endpoints — called by the K8s API server
+  if (req.method === "POST" && url.pathname === "/v1/admission/validate") {
+    const body = await readJson(req);
+    const proxyHost = req.headers["host"]?.split(":")[0] || "scopezero";
+    const expectedProxyUrl = `http://${proxyHost}:${PORT}`;
+    return sendJson(res, 200, handleValidateAdmission(body, expectedProxyUrl));
+  }
+
+  if (req.method === "POST" && url.pathname === "/v1/admission/mutate") {
+    const body = await readJson(req);
+    const proxyHost = req.headers["host"]?.split(":")[0] || "scopezero";
+    const proxyUrl = `http://${proxyHost}:${PORT}`;
+    return sendJson(res, 200, handleMutateAdmission(body, proxyUrl));
+  }
+
   if (req.method === "GET" && url.pathname === "/v1/compliance/controls") {
     const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
     auth.authorize(principal, "ledger:read", tenantId);
@@ -322,6 +416,107 @@ async function handleApi(req, res, url) {
     const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
     auth.authorize(principal, "tenant:read", tenantId);
     return sendJson(res, 200, await runtime.getMissionChain(missionChainMatch[1], tenantId));
+  }
+
+  // MCP trust registry
+  if (req.method === "GET" && url.pathname === "/v1/mcp/servers") {
+    const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "tenant:read", tenantId);
+    const trustLevel = url.searchParams.get("trust_level") || null;
+    return sendJson(res, 200, { servers: runtime.store.listMcpServers({ tenantId, trustLevel }) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/v1/mcp/servers") {
+    const body = await readJson(req);
+    const tenantId = enforceTenant(principal, body.tenant_id);
+    auth.authorize(principal, "agent:write", tenantId);
+    return sendJson(res, 201, await runtime.registerMcpServer({ ...body, tenant_id: tenantId }));
+  }
+
+  const mcpServerMatch = url.pathname.match(/^\/v1\/mcp\/servers\/(.+)$/);
+  if (req.method === "GET" && mcpServerMatch) {
+    const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "tenant:read", tenantId);
+    const server = runtime.store.getMcpServer(decodeURIComponent(mcpServerMatch[1]), tenantId);
+    if (!server) return sendJson(res, 404, { error: "unknown_mcp_server", message: "MCP server not found." });
+    return sendJson(res, 200, server);
+  }
+
+  const mcpTrustMatch = url.pathname.match(/^\/v1\/mcp\/servers\/(.+)\/trust$/);
+  if (req.method === "POST" && mcpTrustMatch) {
+    const body = await readJson(req);
+    const tenantId = enforceTenant(principal, body.tenant_id);
+    auth.authorize(principal, "agent:write", tenantId);
+    return sendJson(res, 200, await runtime.updateMcpServerTrust({
+      server_id: decodeURIComponent(mcpTrustMatch[1]),
+      trust_level: body.trust_level,
+      reviewed_by: body.reviewed_by || principal.subject,
+      tenant_id: tenantId
+    }));
+  }
+
+  const mcpRefreshMatch = url.pathname.match(/^\/v1\/mcp\/servers\/(.+)\/refresh$/);
+  if (req.method === "POST" && mcpRefreshMatch) {
+    const body = await readJson(req);
+    const tenantId = enforceTenant(principal, body.tenant_id);
+    auth.authorize(principal, "agent:write", tenantId);
+    return sendJson(res, 200, await runtime.refreshMcpServerTrust({
+      server_id: decodeURIComponent(mcpRefreshMatch[1]),
+      tenant_id: tenantId
+    }));
+  }
+
+  if (req.method === "POST" && url.pathname === "/v1/mcp/evaluate") {
+    const body = await readJson(req);
+    const tenantId = enforceTenant(principal, body.tenant_id);
+    auth.authorize(principal, "tool:evaluate", tenantId);
+    return sendJson(res, 200, await runtime.evaluateMcpToolCall({ ...body, tenant_id: tenantId, requested_by: auditPrincipal(principal) }));
+  }
+
+  const agentBehaviorMatch = url.pathname.match(/^\/v1\/agents\/([^/]+)\/behavior$/);
+  if (req.method === "GET" && agentBehaviorMatch) {
+    const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "tenant:read", tenantId);
+    const profile = runtime.store.getBehaviorProfile(tenantId, agentBehaviorMatch[1]);
+    if (!profile) return sendJson(res, 404, { error: "no_behavior_profile", message: "No behavior profile found for this agent." });
+    return sendJson(res, 200, profile);
+  }
+
+  // Agent certificate routes
+  const agentCertsMatch = url.pathname.match(/^\/v1\/agents\/([^/]+)\/certs$/);
+  if (req.method === "POST" && agentCertsMatch) {
+    const body = await readJson(req);
+    const tenantId = enforceTenant(principal, body.tenant_id);
+    auth.authorize(principal, "agent:write", tenantId);
+    return sendJson(res, 201, await runtime.issueAgentCert({ agent_id: agentCertsMatch[1], tenant_id: tenantId, ttl_ms: body.ttl_ms }));
+  }
+
+  if (req.method === "GET" && agentCertsMatch) {
+    const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "tenant:read", tenantId);
+    return sendJson(res, 200, { certs: runtime.listAgentCerts({ tenant_id: tenantId, agent_id: agentCertsMatch[1] }) });
+  }
+
+  const certRevokeMatch = url.pathname.match(/^\/v1\/certs\/([^/]+)\/revoke$/);
+  if (req.method === "POST" && certRevokeMatch) {
+    const body = await readJson(req);
+    const tenantId = body.tenant_id || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "agent:write", tenantId);
+    return sendJson(res, 200, await runtime.revokeAgentCert({
+      cert_id: certRevokeMatch[1],
+      revoked_by: body.revoked_by || principal.subject,
+      reason: body.reason,
+      tenant_id: tenantId
+    }));
+  }
+
+  const certGetMatch = url.pathname.match(/^\/v1\/certs\/([^/]+)$/);
+  if (req.method === "GET" && certGetMatch) {
+    const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
+    auth.authorize(principal, "tenant:read", tenantId);
+    const cert = runtime.store.getAgentCert(certGetMatch[1]);
+    if (!cert || cert.tenant_id !== tenantId) return sendJson(res, 404, { error: "unknown_cert", message: "Certificate not found." });
+    return sendJson(res, 200, cert);
   }
 
   if (req.method === "POST" && url.pathname === "/v1/agents") {

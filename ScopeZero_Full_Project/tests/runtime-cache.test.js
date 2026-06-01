@@ -60,7 +60,9 @@ test("runtime caches repeated equivalent decisions for the hot path", async () =
       async addApproval() {
         throw new Error("approval should not be created for cached allow");
       },
-      async recordDecision() {}
+      async recordDecision() {},
+      getBehaviorProfile() { return null; },
+      async recordToolCall() {}
     }
   });
 

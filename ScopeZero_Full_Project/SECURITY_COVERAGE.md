@@ -15,7 +15,7 @@ Every "covered" claim points at a concrete control so it can be verified, not ta
 
 | # | Risk | Coverage | ScopeZero control |
 |---|------|----------|-------------------|
-| LLM01 | Prompt Injection | **Strong** | Evasion-resistant prompt-injection detection (`src/sensitiveData.js`; homoglyph/spacing/leet/base64 — 100% recall on `tests/prompt-injection-corpus.test.js`) → `quarantine_context`; deterministic mission-alignment. The model may still be *influenced*, but the resulting **action** is contained at the gateway and the network. |
+| LLM01 | Prompt Injection | **Strong** | Evasion-resistant prompt-injection detection (`src/sensitiveData.js`; homoglyph/spacing/leet/base64 — 100% recall on `tests/prompt-injection-corpus.test.js`) → `quarantine_context`; a deterministic intent-drift screen (keyword-overlap heuristic, not semantic understanding). The model may still be *influenced*, but the resulting **action** is contained at the gateway and the network. |
 | LLM02 | Sensitive Information Disclosure | **Strong** | Server-side data classification + `sensitive_egress_guard`, `redact` verdict, and mission-bound destination contracts; HTTPS egress allow-listed at the proxy + kernel (K8s NetworkPolicy), DNS pinned to the cluster resolver. |
 | LLM03 | Supply Chain | **Partial** | MCP trust registry with OSV CVE signals + scheduled refresh + trust decay (`src/mcpTrustRegistry.js`); agent identity certificates. Covers MCP-server provenance/CVE; does not scan model weights. |
 | LLM04 | Data and Model Poisoning | **Out of scope** | Training-time concern. ScopeZero is runtime; the hash-chained ledger provides forensic evidence after the fact. |

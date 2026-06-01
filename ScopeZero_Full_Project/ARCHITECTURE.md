@@ -65,7 +65,7 @@ Evaluation pipeline (in order):
 2. Session risk budget exceeded
 3. Prompt injection detected (`src/sensitiveData.js`)
 4. Sensitive data classification (`classifyPayload`)
-5. Mission alignment score (`src/missionAlignment.js`)
+5. Intent-drift screen — keyword-overlap heuristic, not semantic understanding (`src/missionAlignment.js`)
 6. Action contract match (`src/actionAuthorization.js`)
 7. External destination check
 8. Data class rank vs contract ceiling
@@ -159,7 +159,7 @@ Each mission capsule carries vendor-neutral action contracts that describe what 
 }
 ```
 
-The policy engine matches `(tool, operation, data_class, destination)` against contracts in order. No match → `block`. `effect: "approval"` → human approval required. Tool manifests (`src/toolManifest.js`) provide authoritative operation/risk metadata for known tools; inference fallback for unknown ones.
+The policy engine matches `(tool, operation, data_class, destination)` against contracts in order. No match → `block`. `effect: "approval"` → human approval required. Tool manifests (`src/toolManifest.js`) provide authoritative operation/risk metadata for known tools; inference fallback for unknown ones. For an unknown tool the operation/action_type is *inferred from the agent's self-declared input* — not ground truth — so a high-impact action on an unmanifested tool is escalated to approval (`require_manifest_for_high_impact`), never silently trusted.
 
 ---
 

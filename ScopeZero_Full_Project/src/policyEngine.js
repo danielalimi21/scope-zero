@@ -96,6 +96,21 @@ export function evaluatePolicy({ request, mission, agent, policy, classification
     decision = stronger(decision, matchedContract?.effect === "allow" ? "allow" : "approval");
   }
 
+  // No authoritative tool manifest means the operation/action_type for this tool
+  // was inferred from the agent's self-declared input — not ground truth. For a
+  // high-impact action that's not safe to take on the agent's word, so escalate
+  // rather than silently trust it.
+  if (
+    policy.require_manifest_for_high_impact &&
+    action &&
+    !action.tool_manifest &&
+    (policy.high_impact_action_types || []).includes(action.action_type) &&
+    decision !== "block"
+  ) {
+    addRisk(20, "unmanifested-high-impact", `No authoritative manifest for ${action.tool}; high-impact action is inferred from self-declared input.`);
+    decision = stronger(decision, "approval");
+  }
+
   if (policy.admin_privilege_requires_approval && request.privilege?.admin === true) {
     addRisk(28, "admin-privilege", "Administrative privilege changes require human approval.");
     decision = stronger(decision, "approval");

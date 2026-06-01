@@ -1,3 +1,11 @@
+// Intent-drift screen — a deterministic LEXICAL heuristic, not semantic
+// understanding. It scores keyword overlap between the mission objective and the
+// action, and flags high-impact actions whose intent terms (send/export/etc.)
+// don't appear in the objective. It is a cheap first-pass signal that catches
+// gross drift; it does NOT "understand" intent and can be gamed by padding the
+// action text with objective keywords. Treat its output as one input to the
+// policy decision, not as ground truth. (A stronger LLM/embedding judge can be
+// layered on for borderline high-impact cases without changing this default.)
 const HIGH_IMPACT_OPERATIONS = new Set(["external_send", "export", "privilege_change", "payment", "delegate"]);
 const EXTERNAL_INTENT_TERMS = new Set(["send", "share", "email", "external", "publish", "forward", "notify", "slack", "message"]);
 const EXPORT_INTENT_TERMS = new Set(["export", "download", "extract", "archive", "dump"]);

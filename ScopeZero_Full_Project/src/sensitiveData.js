@@ -20,7 +20,7 @@ const PROMPT_INFLUENCE_SIGNALS = [
   { code: "policy_bypass", weight: 42, pattern: /\b(bypass|disable|turn off|remove|ignore)\b.{0,40}\b(policy|guardrails?|safety|authorization|approval|scopezero)\b/i },
   { code: "secret_exfiltration", weight: 45, pattern: /\b(reveal|print|show|send|exfiltrate|leak)\b.{0,50}\b(system prompt|secret|token|api key|credential|private key)\b/i },
   { code: "external_exfiltration", weight: 40, pattern: /\b(send|forward|post|upload|transmit|share)\b.{0,60}\b(external|outside|personal email|gmail|pastebin|webhook|telegram|slack)\b/i },
-  { code: "concealment", weight: 32, pattern: /\b(do not|don't|never)\b.{0,40}\b(tell|log|audit|record|report|mention)\b/i },
+  { code: "concealment", weight: 40, pattern: /\b(do not|don't|never)\b.{0,40}\b(tell|log|audit|record|report|mention)\b/i },
   { code: "roleplay_authority", weight: 20, pattern: /\b(system administrator|security admin|developer mode|root user|authorized auditor)\b/i }
 ];
 
@@ -34,6 +34,20 @@ const LEETSPEAK = new Map([
   ["@", "a"],
   ["$", "s"]
 ]);
+
+// Cyrillic/Greek lookalikes folded to their Latin twin so homoglyph attacks
+// ("іgnоrе prеvіоus" with Cyrillic chars) normalize to the same text a regex
+// sees for plain ASCII. Keys are lowercase (folding runs after toLowerCase).
+const HOMOGLYPHS = new Map([
+  // Cyrillic
+  ["а", "a"], ["в", "b"], ["с", "c"], ["е", "e"], ["н", "h"], ["і", "i"], ["ј", "j"],
+  ["к", "k"], ["м", "m"], ["о", "o"], ["р", "p"], ["ѕ", "s"], ["т", "t"], ["у", "y"],
+  ["х", "x"], ["ԁ", "d"], ["ё", "e"],
+  // Greek
+  ["α", "a"], ["ε", "e"], ["ι", "i"], ["κ", "k"], ["μ", "m"], ["ν", "v"], ["ο", "o"],
+  ["ρ", "p"], ["σ", "o"], ["τ", "t"], ["υ", "u"], ["χ", "x"]
+]);
+const HOMOGLYPH_RE = new RegExp(`[${[...HOMOGLYPHS.keys()].join("")}]`, "g");
 
 export function classifyPayload(payload = {}) {
   const text = typeof payload === "string" ? payload : JSON.stringify(payload);
@@ -65,9 +79,14 @@ export function detectPromptInfluence(context = {}, policy = {}) {
   ]
     .filter(Boolean)
     .join("\n");
-  const fragments = normalizePromptText(rawFragments);
-  const decodedFragments = decodeLikelyBase64(rawFragments).map(normalizePromptText);
-  const candidates = [fragments, ...decodedFragments].filter(Boolean);
+  const baseCandidates = [normalizePromptText(rawFragments), ...decodeLikelyBase64(rawFragments).map(normalizePromptText)].filter(Boolean);
+  // depunct: in-word separators removed but word spaces kept ("ig.no.re all" →
+  // "ignore all"), so boundary-anchored signals still fire on punctuation-split
+  // text. dense: all separators removed, for the configured phrase list against
+  // fully spaced/punctuated obfuscation.
+  const depunctCandidates = baseCandidates.map(depunctForm);
+  const denseCandidates = baseCandidates.map(denseForm);
+  const candidates = [...baseCandidates, ...depunctCandidates];
 
   const patterns = policy.blocked_prompt_patterns || [];
   const matched = [];
@@ -75,13 +94,17 @@ export function detectPromptInfluence(context = {}, policy = {}) {
 
   for (const pattern of patterns) {
     const normalized = normalizePromptText(String(pattern));
-    if (candidates.some((candidate) => candidate.includes(normalized))) {
+    const dense = denseForm(normalized);
+    const hit =
+      candidates.some((candidate) => candidate.includes(normalized)) ||
+      (dense && denseCandidates.some((candidate) => candidate.includes(dense)));
+    if (hit) {
       matched.push({
         code: "configured_pattern",
         pattern,
-        weight: 34
+        weight: 40
       });
-      score += 34;
+      score += 40;
     }
   }
 
@@ -137,13 +160,30 @@ function labelForLevel(level) {
 }
 
 function normalizePromptText(value) {
-  return String(value || "")
+  const base = String(value || "")
     .toLowerCase()
+    .replace(HOMOGLYPH_RE, (char) => HOMOGLYPHS.get(char) || char)
     .replace(/[013457@$]/g, (char) => LEETSPEAK.get(char) || char)
     .replace(/[\u200b-\u200f\u202a-\u202e]/g, "")
     .replace(/[^a-z0-9._/@$-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  return collapseSpacedLetters(base);
+}
+
+// Rejoin a run of single characters split by separators ("i g n o r e",
+// "i.g.n.o.r.e") back into one token, while leaving real multi-letter words
+// untouched. Requires 3+ separated singles, so normal prose isn't affected.
+function collapseSpacedLetters(value) {
+  return value.replace(/\b(?:[a-z0-9][ ._/-]){2,}[a-z0-9]\b/g, (match) => match.replace(/[ ._/-]/g, ""));
+}
+
+function depunctForm(value) {
+  return String(value || "").replace(/[._/-]+/g, "");
+}
+
+function denseForm(value) {
+  return String(value || "").replace(/[^a-z0-9]+/g, "");
 }
 
 function decodeLikelyBase64(value) {

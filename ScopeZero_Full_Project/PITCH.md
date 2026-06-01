@@ -26,7 +26,7 @@ A service mesh enforces *network identity*; it has no concept of a *signed, huma
 ## The proof — run it in 10 seconds
 
 ```
-npm test            # 178 tests, 0 failures
+npm test            # 180 tests, 0 failures
 npm run demo:breach # injected agent vs. a signed mission
 npm run bench       # persistence hot-path throughput
 ```
@@ -38,7 +38,7 @@ npm run bench       # persistence hot-path throughput
 - **Mission capsule** (`src/capsules.js`) — HMAC-signed, TTL-bounded authorization token; vendor-neutral action contracts `(tool, operation, data_class, destination)`.
 - **Enforcement** — Layer 1 pre-exec gateway (SDK, action-level), Layer 2 HTTPS `CONNECT` proxy (mission-bound, destination-level), Layer 3 K8s NetworkPolicy + admission webhooks (kernel, fail-closed).
 - **Ledger** (`src/ledger.js`) — append-only, HMAC-keyed hash chain, optional external anchoring.
-- **Defense-in-depth** — server-side data classification, prompt-injection detection, deterministic mission-alignment, behavioral anomaly detection (incl. baseline-independent low-and-slow ceiling), MCP trust registry with scheduled CVE refresh, agent identity certs.
+- **Defense-in-depth** — server-side data classification, evasion-resistant prompt-injection detection (homoglyph fold, letter-spacing/punctuation collapse, base64 — 100% recall / 0 false-positives on the adversarial corpus in `tests/prompt-injection-corpus.test.js`), deterministic mission-alignment, behavioral anomaly detection (incl. baseline-independent low-and-slow ceiling), MCP trust registry with scheduled CVE refresh, agent identity certs.
 - **Multi-tenant** — Postgres with row-level security (every tenant table, incl. hot-path); hot-path state (behavior, session risk, metrics) on per-row atomic upserts so the gateway scales past single-writer throughput. `npm run bench`: ~31k hot-path writes/sec with **0 full-state-blob rewrites** on the persistence layer.
 
 ## Honest scope (what's enforcement vs. governance)

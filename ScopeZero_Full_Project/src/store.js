@@ -32,9 +32,57 @@ export class Store {
     this.db = new DatabaseSync(this.dbPath);
     this.migrate();
     this.state = this.loadState() || (await this.loadLegacyJsonState()) || createSeedState(this.defaultPolicy);
+    // Hot-path collections (behavior profiles, session risk) are written on
+    // every tool call. They live in their own row-keyed tables, not the
+    // full-state blob, so a single call no longer reserializes all state — and
+    // (in Postgres) no longer takes the global write lock.
+    this.migrateHotPathState();
     // First persist rebuilds every mirror table from loaded/seed state.
     this.markDirty(...MIRRORED_TABLES);
     await this.save();
+  }
+
+  // One-time lift of any legacy blob-resident behavior_profiles/sessions into
+  // their dedicated tables, then drop them from the in-memory state object so
+  // the blob no longer carries (or re-persists) them.
+  migrateHotPathState() {
+    for (const profile of Object.values(this.state.behavior_profiles || {})) {
+      if (profile?.tenant_id && profile?.agent_id) {
+        this.writeBehaviorProfile(profile.tenant_id, profile.agent_id, profile);
+      }
+    }
+    for (const session of Object.values(this.state.sessions || {})) {
+      if (session?.tenant_id && session?.session_id) {
+        this.db
+          .prepare(
+            `INSERT INTO sessions (tenant_id, session_id, risk_consumed, updated_at)
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(tenant_id, session_id) DO UPDATE SET risk_consumed = excluded.risk_consumed, updated_at = CURRENT_TIMESTAMP`
+          )
+          .run(session.tenant_id, session.session_id, Number(session.risk_consumed || 0));
+      }
+    }
+    for (const [name, value] of Object.entries(this.state.metrics || {})) {
+      this.db
+        .prepare(
+          `INSERT INTO metrics (name, value) VALUES (?, ?)
+           ON CONFLICT(name) DO UPDATE SET value = excluded.value`
+        )
+        .run(name, Number(value) || 0);
+    }
+    delete this.state.behavior_profiles;
+    delete this.state.sessions;
+    delete this.state.metrics;
+  }
+
+  writeBehaviorProfile(tenantId, agentId, profile) {
+    this.db
+      .prepare(
+        `INSERT INTO behavior_profiles (tenant_id, agent_id, body, updated_at)
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(tenant_id, agent_id) DO UPDATE SET body = excluded.body, updated_at = CURRENT_TIMESTAMP`
+      )
+      .run(tenantId, agentId, JSON.stringify(profile));
   }
 
   migrate() {
@@ -97,8 +145,26 @@ export class Store {
         created_at TEXT NOT NULL,
         approved_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS behavior_profiles (
+        tenant_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        body TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (tenant_id, agent_id)
+      );
+      CREATE TABLE IF NOT EXISTS sessions (
+        tenant_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        risk_consumed REAL NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (tenant_id, session_id)
+      );
+      CREATE TABLE IF NOT EXISTS metrics (
+        name TEXT PRIMARY KEY,
+        value INTEGER NOT NULL DEFAULT 0
+      );
       INSERT OR REPLACE INTO scopezero_meta (key, value, updated_at)
-      VALUES ('schema_version', '3', CURRENT_TIMESTAMP);
+      VALUES ('schema_version', '4', CURRENT_TIMESTAMP);
     `);
   }
 
@@ -342,46 +408,80 @@ export class Store {
     return approval;
   }
 
+  // Atomic counter increments — no full-state read-modify-write. Fires on every
+  // tool call, so it stays off the blob.
   async recordDecision(verdict) {
-    this.state.metrics.runtime_decisions += 1;
-    if (verdict.decision === "block") {
-      this.state.metrics.blocked_actions += 1;
+    const counters = ["runtime_decisions", "evidence_capsules"];
+    if (verdict.decision === "block") counters.push("blocked_actions");
+    else if (verdict.decision === "approval") counters.push("approvals_required");
+    else if (verdict.decision === "redact") counters.push("redactions");
+    else if (verdict.decision === "quarantine_context") counters.push("quarantined_contexts");
+    const inc = this.db.prepare("INSERT INTO metrics (name, value) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET value = value + 1");
+    this.db.exec("BEGIN IMMEDIATE TRANSACTION");
+    try {
+      for (const name of counters) inc.run(name);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
     }
-    if (verdict.decision === "approval") {
-      this.state.metrics.approvals_required += 1;
-    }
-    if (verdict.decision === "redact") {
-      this.state.metrics.redactions += 1;
-    }
-    if (verdict.decision === "quarantine_context") {
-      this.state.metrics.quarantined_contexts += 1;
-    }
-    this.state.metrics.evidence_capsules += 1;
-    await this.save();
   }
 
+  getMetrics() {
+    const metrics = { runtime_decisions: 0, blocked_actions: 0, approvals_required: 0, redactions: 0, quarantined_contexts: 0, evidence_capsules: 0 };
+    for (const row of this.db.prepare("SELECT name, value FROM metrics").all()) {
+      metrics[row.name] = row.value;
+    }
+    return metrics;
+  }
+
+  // Atomic per-row increment — correct under concurrent writers, no full-state
+  // read-modify-write. Caps at 100.
   async updateSessionRisk(sessionId, contribution, tenantId = "tenant_contoso") {
-    const key = `${tenantId}:${sessionId}`;
-    const current = this.state.sessions[key] || { tenant_id: tenantId, session_id: sessionId, risk_consumed: 0 };
-    current.risk_consumed = Math.min(100, Number(current.risk_consumed || 0) + Number(contribution || 0));
-    this.state.sessions[key] = current;
-    await this.save();
-    return current.risk_consumed;
+    const delta = Number(contribution || 0);
+    this.db
+      .prepare(
+        `INSERT INTO sessions (tenant_id, session_id, risk_consumed, updated_at)
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(tenant_id, session_id)
+         DO UPDATE SET risk_consumed = MIN(100, sessions.risk_consumed + ?), updated_at = CURRENT_TIMESTAMP`
+      )
+      .run(tenantId, sessionId, Math.min(100, delta), delta);
+    return this.getSessionRisk(sessionId, tenantId);
   }
 
   getSessionRisk(sessionId, tenantId = "tenant_contoso") {
-    return this.state.sessions[`${tenantId}:${sessionId}`]?.risk_consumed || 0;
+    const row = this.db.prepare("SELECT risk_consumed FROM sessions WHERE tenant_id = ? AND session_id = ?").get(tenantId, sessionId);
+    return row?.risk_consumed || 0;
   }
 
   getBehaviorProfile(tenantId, agentId) {
-    const key = `${tenantId}:${agentId}`;
-    return this.state.behavior_profiles[key] || null;
+    const row = this.db.prepare("SELECT body FROM behavior_profiles WHERE tenant_id = ? AND agent_id = ?").get(tenantId, agentId);
+    return row ? JSON.parse(row.body) : null;
   }
 
   async recordToolCall(tenantId, agentId, toolKey, profile) {
-    const key = `${tenantId}:${agentId}`;
-    this.state.behavior_profiles[key] = profile;
-    await this.save();
+    this.writeBehaviorProfile(tenantId, agentId, profile);
+  }
+
+  // Surfaced for /v1/state and compliance views, which expect the legacy
+  // `tenant:key` map shape. These are reporting reads, not the hot path.
+  getAllSessions() {
+    return Object.fromEntries(
+      this.db.prepare("SELECT tenant_id, session_id, risk_consumed FROM sessions").all().map((row) => [
+        `${row.tenant_id}:${row.session_id}`,
+        { tenant_id: row.tenant_id, session_id: row.session_id, risk_consumed: row.risk_consumed }
+      ])
+    );
+  }
+
+  getAllBehaviorProfiles() {
+    return Object.fromEntries(
+      this.db.prepare("SELECT body FROM behavior_profiles").all().map((row) => {
+        const profile = JSON.parse(row.body);
+        return [`${profile.tenant_id}:${profile.agent_id}`, profile];
+      })
+    );
   }
 
   getMcpServer(serverId, tenantId = null) {

@@ -506,7 +506,7 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && agentBehaviorMatch) {
     const tenantId = url.searchParams.get("tenant_id") || principal.tenant_id || "tenant_contoso";
     auth.authorize(principal, "tenant:read", tenantId);
-    const profile = runtime.store.getBehaviorProfile(tenantId, agentBehaviorMatch[1]);
+    const profile = await runtime.store.getBehaviorProfile(tenantId, agentBehaviorMatch[1]);
     if (!profile) return sendJson(res, 404, { error: "no_behavior_profile", message: "No behavior profile found for this agent." });
     return sendJson(res, 200, profile);
   }

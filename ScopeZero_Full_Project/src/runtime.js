@@ -170,7 +170,7 @@ export class ScopeZeroRuntime {
     const agent = this.store.getAgent(input.tenant_id, input.agent_id);
     const mission = this.store.getMission(input.mission_id, input.tenant_id);
     const sessionId = input.session_id || `${input.agent_id}:${input.mission_id}`;
-    const currentSessionRisk = this.store.getSessionRisk(sessionId, input.tenant_id);
+    const currentSessionRisk = await this.store.getSessionRisk(sessionId, input.tenant_id);
     const classification = classifyPayload(input.payload || {});
     const promptInfluence = detectPromptInfluence(input.context || {}, policy);
     const externalDestination = isExternalDestination(input.destination || {}, policy);
@@ -298,7 +298,7 @@ export class ScopeZeroRuntime {
 
     // Behavioral anomaly detection — runs on every non-cached path and cache hits alike
     const now = new Date();
-    const behaviorProfile = this.store.getBehaviorProfile(input.tenant_id, input.agent_id)
+    const behaviorProfile = (await this.store.getBehaviorProfile(input.tenant_id, input.agent_id))
       || createEmptyProfile(input.tenant_id, input.agent_id);
     const { anomalies, risk_delta } = analyzeToolCallBehavior(behaviorProfile, input.tool, now, {
       dailyVolumeCap: policy.behavior_daily_volume_cap,
@@ -566,10 +566,15 @@ export class ScopeZeroRuntime {
 
   async state({ limit = 25 } = {}) {
     const recent_events = await this.ledger.list({ limit, reverse: true });
-    return {
+    const snapshot = {
       ...this.store.state,
       recent_events
     };
+    // Hot-path collections live in their own tables now; re-attach for reporting.
+    if (this.store.getAllSessions) snapshot.sessions = await this.store.getAllSessions();
+    if (this.store.getAllBehaviorProfiles) snapshot.behavior_profiles = await this.store.getAllBehaviorProfiles();
+    if (this.store.getMetrics) snapshot.metrics = await this.store.getMetrics();
+    return snapshot;
   }
 
   async verifyLedger() {

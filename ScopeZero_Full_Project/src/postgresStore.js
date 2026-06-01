@@ -20,7 +20,119 @@ export class PostgresStore extends Store {
     await this.migrate();
     const result = await this.pool.query("SELECT body FROM scopezero_state WHERE id = $1", ["primary"]);
     this.state = result.rows[0]?.body || createEmptyState(this.defaultPolicy);
+    await this.migrateHotPathState();
     await this.save();
+  }
+
+  // Lift any legacy blob-resident hot-path state into the dedicated tables, then
+  // drop it from the blob so it is not re-persisted. Mirrors the SQLite store.
+  async migrateHotPathState() {
+    for (const profile of Object.values(this.state.behavior_profiles || {})) {
+      if (profile?.tenant_id && profile?.agent_id) {
+        await this.recordToolCall(profile.tenant_id, profile.agent_id, null, profile);
+      }
+    }
+    for (const session of Object.values(this.state.sessions || {})) {
+      if (session?.tenant_id && session?.session_id) {
+        await this.pool.query(
+          `INSERT INTO sessions (tenant_id, session_id, risk_consumed, updated_at)
+           VALUES ($1, $2, $3, now())
+           ON CONFLICT (tenant_id, session_id) DO UPDATE SET risk_consumed = excluded.risk_consumed, updated_at = now()`,
+          [session.tenant_id, session.session_id, Number(session.risk_consumed || 0)]
+        );
+      }
+    }
+    for (const [name, value] of Object.entries(this.state.metrics || {})) {
+      await this.pool.query(
+        `INSERT INTO metrics (name, value) VALUES ($1, $2)
+         ON CONFLICT (name) DO UPDATE SET value = excluded.value`,
+        [name, Number(value) || 0]
+      );
+    }
+    delete this.state.behavior_profiles;
+    delete this.state.sessions;
+    delete this.state.metrics;
+  }
+
+  // ── Hot path: per-row, off the global write lock ────────────────────────────
+  // Behavior profiles and session risk are written on every tool call. Routing
+  // them through withWriteLock (full-state read-modify-write under one advisory
+  // lock) would cap the whole gateway to single-writer throughput. These are
+  // per-agent / per-session independent rows, so atomic upserts let concurrent
+  // evaluations proceed in parallel.
+
+  async getBehaviorProfile(tenantId, agentId) {
+    const result = await this.pool.query(
+      "SELECT body FROM behavior_profiles WHERE tenant_id = $1 AND agent_id = $2",
+      [tenantId, agentId]
+    );
+    return result.rows[0]?.body || null;
+  }
+
+  async recordToolCall(tenantId, agentId, toolKey, profile) {
+    await this.pool.query(
+      `INSERT INTO behavior_profiles (tenant_id, agent_id, body, updated_at)
+       VALUES ($1, $2, $3::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET body = excluded.body, updated_at = now()`,
+      [tenantId, agentId, JSON.stringify(profile)]
+    );
+  }
+
+  async getSessionRisk(sessionId, tenantId = "tenant_contoso") {
+    const result = await this.pool.query(
+      "SELECT risk_consumed FROM sessions WHERE tenant_id = $1 AND session_id = $2",
+      [tenantId, sessionId]
+    );
+    return result.rows[0]?.risk_consumed || 0;
+  }
+
+  async updateSessionRisk(sessionId, contribution, tenantId = "tenant_contoso") {
+    const delta = Number(contribution || 0);
+    const result = await this.pool.query(
+      `INSERT INTO sessions (tenant_id, session_id, risk_consumed, updated_at)
+       VALUES ($1, $2, LEAST(100, $3), now())
+       ON CONFLICT (tenant_id, session_id)
+       DO UPDATE SET risk_consumed = LEAST(100, sessions.risk_consumed + $4), updated_at = now()
+       RETURNING risk_consumed`,
+      [tenantId, sessionId, Math.min(100, delta), delta]
+    );
+    return result.rows[0].risk_consumed;
+  }
+
+  async getAllSessions() {
+    const result = await this.pool.query("SELECT tenant_id, session_id, risk_consumed FROM sessions");
+    return Object.fromEntries(
+      result.rows.map((row) => [
+        `${row.tenant_id}:${row.session_id}`,
+        { tenant_id: row.tenant_id, session_id: row.session_id, risk_consumed: row.risk_consumed }
+      ])
+    );
+  }
+
+  async getAllBehaviorProfiles() {
+    const result = await this.pool.query("SELECT body FROM behavior_profiles");
+    return Object.fromEntries(result.rows.map((row) => [`${row.body.tenant_id}:${row.body.agent_id}`, row.body]));
+  }
+
+  async recordDecision(verdict) {
+    const counters = ["runtime_decisions", "evidence_capsules"];
+    if (verdict.decision === "block") counters.push("blocked_actions");
+    else if (verdict.decision === "approval") counters.push("approvals_required");
+    else if (verdict.decision === "redact") counters.push("redactions");
+    else if (verdict.decision === "quarantine_context") counters.push("quarantined_contexts");
+    for (const name of counters) {
+      await this.pool.query(
+        "INSERT INTO metrics (name, value) VALUES ($1, 1) ON CONFLICT (name) DO UPDATE SET value = metrics.value + 1",
+        [name]
+      );
+    }
+  }
+
+  async getMetrics() {
+    const metrics = { runtime_decisions: 0, blocked_actions: 0, approvals_required: 0, redactions: 0, quarantined_contexts: 0, evidence_capsules: 0 };
+    const result = await this.pool.query("SELECT name, value FROM metrics");
+    for (const row of result.rows) metrics[row.name] = Number(row.value);
+    return metrics;
   }
 
   async migrate() {
@@ -75,6 +187,24 @@ export class PostgresStore extends Store {
         id TEXT PRIMARY KEY,
         body JSONB NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS behavior_profiles (
+        tenant_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        body JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (tenant_id, agent_id)
+      );
+      CREATE TABLE IF NOT EXISTS sessions (
+        tenant_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        risk_consumed DOUBLE PRECISION NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (tenant_id, session_id)
+      );
+      CREATE TABLE IF NOT EXISTS metrics (
+        name TEXT PRIMARY KEY,
+        value BIGINT NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS scopezero_write_locks (
         id TEXT PRIMARY KEY,
@@ -171,14 +301,6 @@ export class PostgresStore extends Store {
 
   async updateApproval(approvalId, patch, tenantId = null) {
     return this.withWriteLock(() => super.updateApproval(approvalId, patch, tenantId));
-  }
-
-  async recordDecision(verdict) {
-    return this.withWriteLock(() => super.recordDecision(verdict));
-  }
-
-  async updateSessionRisk(sessionId, contribution, tenantId = "tenant_contoso") {
-    return this.withWriteLock(() => super.updateSessionRisk(sessionId, contribution, tenantId));
   }
 
   async enableTenantRls() {

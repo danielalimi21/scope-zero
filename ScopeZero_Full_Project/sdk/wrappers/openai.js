@@ -26,7 +26,9 @@
  *   });
  */
 
-export function guardOpenAI(openai, sz, { tenantId, agentId, missionId }) {
+import { authorizeAndExecute } from "../guard-core.js";
+
+export function guardOpenAI(openai, sz, { tenantId, agentId, missionId, redactors = {} }) {
   return {
     /**
      * Runs an agentic tool-call loop.
@@ -69,42 +71,24 @@ export function guardOpenAI(openai, sz, { tenantId, agentId, missionId }) {
             args = {};
           }
 
-          const authorization = await sz.authorizeAction({
-            tenant_id: tenantId,
-            agent_id: agentId,
-            mission_id: missionId,
+          const outcome = await authorizeAndExecute({
+            sz,
+            tenantId,
+            agentId,
+            missionId,
             tool: toolName,
             action: `openai.tool_call.${toolName}`,
-            payload: args
+            payload: args,
+            handler: toolHandlers[toolName],
+            redactor: redactors[toolName] || null
           });
 
-          decisions.push({ tool: toolName, decision: authorization.decision, authorization_id: authorization.authorization_id });
-
-          let toolResult;
-          if (authorization.verdict?.safe_to_execute) {
-            const handler = toolHandlers[toolName];
-            if (!handler) {
-              toolResult = { error: `No handler registered for tool: ${toolName}` };
-            } else {
-              try {
-                toolResult = await handler(args);
-              } catch (error) {
-                toolResult = { error: error.message };
-              }
-            }
-          } else {
-            toolResult = {
-              scopezero_blocked: true,
-              decision: authorization.decision,
-              reasons: authorization.verdict?.reasons?.map((r) => r.message) || [],
-              authorization_id: authorization.authorization_id
-            };
-          }
+          decisions.push({ tool: toolName, decision: outcome.decision, executed: outcome.executed, authorization_id: outcome.authorization_id });
 
           history.push({
             role: "tool",
             tool_call_id: call.id,
-            content: typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult)
+            content: typeof outcome.result === "string" ? outcome.result : JSON.stringify(outcome.result)
           });
         }
       }

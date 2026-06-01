@@ -26,7 +26,9 @@
  *   });
  */
 
-export function guardAnthropic(anthropic, sz, { tenantId, agentId, missionId }) {
+import { authorizeAndExecute } from "../guard-core.js";
+
+export function guardAnthropic(anthropic, sz, { tenantId, agentId, missionId, redactors = {} }) {
   return {
     /**
      * Runs an agentic tool-use loop.
@@ -75,43 +77,24 @@ export function guardAnthropic(anthropic, sz, { tenantId, agentId, missionId }) 
           const toolName = block.name;
           const toolInput = block.input || {};
 
-          const authorization = await sz.authorizeAction({
-            tenant_id: tenantId,
-            agent_id: agentId,
-            mission_id: missionId,
+          const outcome = await authorizeAndExecute({
+            sz,
+            tenantId,
+            agentId,
+            missionId,
             tool: toolName,
             action: `anthropic.tool_use.${toolName}`,
-            payload: toolInput
+            payload: toolInput,
+            handler: toolHandlers[toolName],
+            redactor: redactors[toolName] || null
           });
 
-          decisions.push({ tool: toolName, decision: authorization.decision, authorization_id: authorization.authorization_id });
-
-          let resultContent;
-          if (authorization.verdict?.safe_to_execute) {
-            const handler = toolHandlers[toolName];
-            if (!handler) {
-              resultContent = JSON.stringify({ error: `No handler registered for tool: ${toolName}` });
-            } else {
-              try {
-                const result = await handler(toolInput);
-                resultContent = typeof result === "string" ? result : JSON.stringify(result);
-              } catch (error) {
-                resultContent = JSON.stringify({ error: error.message });
-              }
-            }
-          } else {
-            resultContent = JSON.stringify({
-              scopezero_blocked: true,
-              decision: authorization.decision,
-              reasons: authorization.verdict?.reasons?.map((r) => r.message) || [],
-              authorization_id: authorization.authorization_id
-            });
-          }
+          decisions.push({ tool: toolName, decision: outcome.decision, executed: outcome.executed, authorization_id: outcome.authorization_id });
 
           toolResults.push({
             type: "tool_result",
             tool_use_id: block.id,
-            content: resultContent
+            content: typeof outcome.result === "string" ? outcome.result : JSON.stringify(outcome.result)
           });
         }
 

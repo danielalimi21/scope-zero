@@ -21,5 +21,61 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # ── Postgres path (multi-tenant, RLS) ──────────────────────────────────────
+  # Brought up only with a profile, so the default `docker compose up` stays
+  # the single-node SQLite gateway above.
+  #   docker compose --profile postgres up        # gateway on Postgres
+  #   docker compose --profile bench up           # run the concurrency benchmark
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres", "bench"]
+    environment:
+      POSTGRES_USER: scopezero
+      POSTGRES_PASSWORD: scopezero
+      POSTGRES_DB: scopezero
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scopezero -d scopezero"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - scopezero-pgdata:/var/lib/postgresql/data
+
+  scopezero-pg:
+    build: .
+    image: scopezero/runtime:0.1.0
+    profiles: ["postgres"]
+    ports:
+      - "8788:8788"
+    environment:
+      PORT: "8788"
+      SCOPEZERO_STORE: "postgres"
+      DATABASE_URL: "postgres://scopezero:scopezero@postgres:5432/scopezero"
+      PGSSLMODE: "disable"
+      SCOPEZERO_REQUIRE_AUTH: "true"
+      SCOPEZERO_ALLOW_DEV_TOKEN: "true"
+      SCOPEZERO_SIGNING_SECRET: "replace-with-32-byte-signing-secret"
+      SCOPEZERO_AUTH_SECRET: "replace-with-32-byte-auth-secret"
+      SCOPEZERO_API_KEY: "replace-with-service-api-key"
+      SCOPEZERO_SECRETS_MASTER_KEY: "replace-with-32-byte-secrets-master-key"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # One-shot: run the concurrency benchmark against Postgres, then exit.
+  bench:
+    build: .
+    image: scopezero/runtime:0.1.0
+    profiles: ["bench"]
+    environment:
+      SCOPEZERO_STORE: "postgres"
+      DATABASE_URL: "postgres://scopezero:scopezero@postgres:5432/scopezero"
+      PGSSLMODE: "disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["node", "tools/concurrency-bench.js", "50000"]
+
 volumes:
   scopezero-data:
+  scopezero-pgdata:

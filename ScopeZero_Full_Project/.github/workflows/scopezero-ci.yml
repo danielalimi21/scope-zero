@@ -33,6 +33,9 @@ jobs:
       - name: Hot-path throughput (regression gate)
         run: node tools/throughput-bench.js 20000
 
+      - name: Concurrency lossless check
+        run: node tools/concurrency-bench.js 20000
+
       - name: Start gateway
         run: node server.js &
 

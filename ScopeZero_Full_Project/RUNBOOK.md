@@ -33,6 +33,29 @@ node tools\backup-data.js
 
 Backups are written to `backups/<timestamp>`.
 
+## Run the Postgres (multi-tenant) path locally
+
+The default `docker compose up` runs the single-node SQLite gateway. To run the
+production-shaped Postgres path, or the concurrency benchmark, use the profiles:
+
+```bash
+# Gateway backed by Postgres (RLS, multi-tenant), on :8788
+docker compose --profile postgres up --build
+
+# One-shot concurrency benchmark against Postgres, then exit
+docker compose --profile bench up --build --abort-on-container-exit
+```
+
+`bench` runs `tools/concurrency-bench.js`, which fires 50k decision writes
+concurrently and asserts the atomic counters advanced by exactly that many
+(lossless under parallel writers) — the multi-writer path the hot-path
+row-tables unlocked. Run it against SQLite directly with:
+
+```bash
+npm run bench               # hot-path throughput, 0 state-blob rewrites
+npm run bench:concurrency   # lossless-under-load check
+```
+
 ## Production Required Environment
 
 Set:

@@ -12,6 +12,7 @@
     "demo:agent": "node examples/malicious-diligence-agent.js",
     "demo:breach": "node examples/breach-containment-demo.js",
     "bench": "node tools/throughput-bench.js",
+    "bench:concurrency": "node tools/concurrency-bench.js",
     "smoke": "node tools/smoke-test.js",
     "verify:ledger": "node tools/verify-ledger.js",
     "backup": "node tools/backup-data.js",

@@ -1,4 +1,5 @@
 import { builtInToolManifestMap, normalizeToolManifest } from "./toolManifest.js";
+import { createGoogleWorkspaceConnectors } from "./googleConnector.js";
 
 export class ConnectorRegistry {
   constructor({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
@@ -100,6 +101,9 @@ export class ConnectorRegistry {
     this.register(createSlackDraftConnector({ env: this.env, fetchImpl: this.fetchImpl }));
     this.register(createGitHubPrConnector({ env: this.env, fetchImpl: this.fetchImpl }));
     this.register(createAwsIamAttachPolicyConnector({ env: this.env }));
+    for (const connector of createGoogleWorkspaceConnectors({ env: this.env, fetchImpl: this.fetchImpl })) {
+      this.register(connector);
+    }
   }
 }
 

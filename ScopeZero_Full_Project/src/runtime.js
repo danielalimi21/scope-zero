@@ -10,7 +10,7 @@ import { createLedgerAnchorFromEnv } from "./ledgerAnchor.js";
 import { PostgresStore } from "./postgresStore.js";
 import { Store } from "./store.js";
 
-export async function createRuntime({ rootDir, signingSecret, toolManifestResolver = null }) {
+export async function createRuntime({ rootDir, signingSecret, toolManifestResolver = null, approvalNotifier = null }) {
   const defaultPolicy = JSON.parse(await readFile(new URL("../config/defaultPolicy.json", import.meta.url), "utf8"));
   const store = process.env.SCOPEZERO_STORE === "postgres"
     ? new PostgresStore({ connectionString: process.env.DATABASE_URL, defaultPolicy })
@@ -20,15 +20,16 @@ export async function createRuntime({ rootDir, signingSecret, toolManifestResolv
   });
   await store.init();
   await ledger.init();
-  return new ScopeZeroRuntime({ store, ledger, signingSecret, toolManifestResolver });
+  return new ScopeZeroRuntime({ store, ledger, signingSecret, toolManifestResolver, approvalNotifier });
 }
 
 export class ScopeZeroRuntime {
-  constructor({ store, ledger, signingSecret, toolManifestResolver = null }) {
+  constructor({ store, ledger, signingSecret, toolManifestResolver = null, approvalNotifier = null }) {
     this.store = store;
     this.ledger = ledger;
     this.signingSecret = signingSecret;
     this.toolManifestResolver = toolManifestResolver;
+    this.approvalNotifier = approvalNotifier;
     this.decisionCache = new Map();
   }
 
@@ -179,6 +180,9 @@ export class ScopeZeroRuntime {
         action: input.action,
         verdict
       });
+      if (this.approvalNotifier) {
+        this.approvalNotifier.notify(approval).catch(() => {});
+      }
     }
 
     const evidence = await this.ledger.append({

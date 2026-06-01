@@ -10,6 +10,8 @@ import { createRuntime } from "./src/runtime.js";
 import { SecretManager } from "./src/secrets.js";
 import { contentTypeForSiem, exportEvents } from "./src/siem.js";
 import { Telemetry } from "./src/telemetry.js";
+import { createApprovalNotifierFromEnv } from "./src/approvalNotifier.js";
+import { enforceTenant } from "./src/tenantGuard.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,10 +33,12 @@ const OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "
 const SECRETS_PROVIDER = process.env.SCOPEZERO_SECRETS_PROVIDER || "local";
 
 const registry = new ConnectorRegistry();
+const approvalNotifier = createApprovalNotifierFromEnv(process.env);
 const runtime = await createRuntime({
   rootDir: __dirname,
   signingSecret: SIGNING_SECRET,
-  toolManifestResolver: (tool) => registry.getManifest(tool)
+  toolManifestResolver: (tool) => registry.getManifest(tool),
+  approvalNotifier
 });
 const oauth = new OAuthBroker({ secret: AUTH_SECRET, redirectBaseUrl: PUBLIC_BASE_URL });
 const telemetry = new Telemetry({
@@ -287,20 +291,23 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/v1/agents") {
     const body = await readJson(req);
-    auth.authorize(principal, "agent:write", body.tenant_id);
-    return sendJson(res, 201, await runtime.registerAgent(body));
+    const tenantId = enforceTenant(principal, body.tenant_id);
+    auth.authorize(principal, "agent:write", tenantId);
+    return sendJson(res, 201, await runtime.registerAgent({ ...body, tenant_id: tenantId }));
   }
 
   if (req.method === "POST" && url.pathname === "/v1/missions") {
     const body = await readJson(req);
-    auth.authorize(principal, "mission:write", body.tenant_id);
-    return sendJson(res, 201, await runtime.createMission({ ...body, requested_by: auditPrincipal(principal) }));
+    const tenantId = enforceTenant(principal, body.tenant_id);
+    auth.authorize(principal, "mission:write", tenantId);
+    return sendJson(res, 201, await runtime.createMission({ ...body, tenant_id: tenantId, requested_by: auditPrincipal(principal) }));
   }
 
   if (req.method === "POST" && (url.pathname === "/v1/tool-calls" || url.pathname === "/v1/action-authorizations")) {
     const body = await readJson(req);
-    auth.authorize(principal, "tool:evaluate", body.tenant_id);
-    return sendJson(res, 200, await runtime.evaluateToolCall({ ...body, requested_by: auditPrincipal(principal) }));
+    const tenantId = enforceTenant(principal, body.tenant_id);
+    auth.authorize(principal, "tool:evaluate", tenantId);
+    return sendJson(res, 200, await runtime.evaluateToolCall({ ...body, tenant_id: tenantId, requested_by: auditPrincipal(principal) }));
   }
 
   const approvalMatch = url.pathname.match(/^\/v1\/approvals\/([^/]+)\/(approve|deny)$/);
@@ -309,6 +316,11 @@ async function handleApi(req, res, url) {
     const tenantId = body.tenant_id || principal.tenant_id || "tenant_contoso";
     auth.authorize(principal, "approval:write", tenantId);
     return sendJson(res, 200, await runtime.updateApproval(approvalMatch[1], approvalMatch[2], body.actor || principal.subject, tenantId));
+  }
+
+  // Slack interactive callback — approve/deny buttons in Block Kit messages
+  if (req.method === "POST" && url.pathname === "/v1/approvals/slack/actions") {
+    return handleSlackActions(req, res);
   }
 
   return sendJson(res, 404, { error: { code: "not_found", message: "Endpoint not found." } });
@@ -355,6 +367,37 @@ async function handleMetrics(req, res) {
   ];
   res.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
   res.end(lines.join("\n") + "\n");
+}
+
+async function handleSlackActions(req, res) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString("utf8");
+  const params = new URLSearchParams(raw);
+  let payload;
+  try {
+    payload = JSON.parse(params.get("payload") || "{}");
+  } catch {
+    return sendJson(res, 400, { error: { code: "invalid_payload", message: "Invalid Slack payload." } });
+  }
+
+  const action = (payload.actions || [])[0];
+  if (!action) return sendJson(res, 200, {});
+
+  const actionId = action.action_id || "";
+  const approvalId = action.value || "";
+  const actorEmail = payload.user?.name ? `${payload.user.name}@slack` : "slack.user";
+
+  const match = actionId.match(/^(approve|deny)_(.+)$/);
+  if (!match || !approvalId) return sendJson(res, 200, {});
+
+  const decision = match[1];
+  try {
+    await runtime.updateApproval(approvalId, decision, actorEmail, null);
+  } catch {
+    // Approval may already be resolved — acknowledge Slack regardless
+  }
+  return sendJson(res, 200, {});
 }
 
 async function serveStatic(res, requestPath) {

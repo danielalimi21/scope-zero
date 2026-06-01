@@ -6,6 +6,13 @@ const BASELINE_MIN_CALLS = 20;              // profile considered established
 const BASELINE_MIN_AGE_HOURS = 5;           // hours of history before velocity checks
 const VELOCITY_SPIKE_MULTIPLIER = 3;        // observed rate / baseline rate to flag
 const VELOCITY_SPIKE_FLOOR = 5;             // minimum threshold regardless of baseline
+// Absolute rolling-day ceilings, independent of the learned baseline. Velocity
+// checks are baseline-relative, so an attacker who either drips calls slowly
+// (under the burst/spike thresholds) or first inflates the baseline can sustain
+// abuse indefinitely. A baseline-independent daily ceiling closes that gap.
+const DAILY_VOLUME_CAP = 500;               // low-risk tools, calls per UTC day
+const DAILY_VOLUME_CAP_HIGH_RISK = 50;      // high-risk tools, calls per UTC day
+const DAILY_COUNTS_RETENTION_DAYS = 7;
 
 // Tools whose first uses warrant escalation even before baseline is established.
 // Pattern matches the tool key (e.g. "gmail.send", "aws.iam.attachPolicy").
@@ -21,14 +28,21 @@ export function createEmptyToolProfile(now) {
     first_seen: now.toISOString(),
     last_seen: now.toISOString(),
     hourly_dist: Array(24).fill(0),
-    velocity_window: []
+    velocity_window: [],
+    daily_counts: {}
   };
+}
+
+function dayKey(date) {
+  return date.toISOString().slice(0, 10);
 }
 
 // Analyze behavior BEFORE recording the current call.
 // Returns { anomalies: [], risk_delta: number }
-export function analyzeToolCallBehavior(profile, toolKey, now = new Date()) {
+export function analyzeToolCallBehavior(profile, toolKey, now = new Date(), options = {}) {
   const toolProfile = profile?.tools?.[toolKey];
+  const dailyCap = Number(options.dailyVolumeCap ?? DAILY_VOLUME_CAP);
+  const dailyCapHighRisk = Number(options.dailyVolumeCapHighRisk ?? DAILY_VOLUME_CAP_HIGH_RISK);
 
   if (!toolProfile || toolProfile.total_calls === 0) {
     return {
@@ -85,6 +99,23 @@ export function analyzeToolCallBehavior(profile, toolKey, now = new Date()) {
     });
   }
 
+  // Absolute daily ceiling — catches low-and-slow campaigns that stay under the
+  // burst/velocity thresholds, and baseline-poisoning (you cannot inflate an
+  // absolute cap). Counts prior calls today; this call is the one that crosses.
+  const isHighRiskTool = HIGH_RISK_COLD_START.test(toolKey);
+  const dayCap = isHighRiskTool ? dailyCapHighRisk : dailyCap;
+  const todayCount = (toolProfile.daily_counts || {})[dayKey(now)] || 0;
+  if (dayCap > 0 && todayCount >= dayCap) {
+    anomalies.push({
+      code: "sustained_volume",
+      message: `${todayCount + 1} calls to ${toolKey} today exceeds the daily ceiling of ${dayCap} (baseline-independent).`,
+      severity: "high",
+      risk_delta: 35,
+      observed_today: todayCount + 1,
+      daily_cap: dayCap
+    });
+  }
+
   const firstSeenMs = toolProfile.first_seen ? new Date(toolProfile.first_seen).getTime() : null;
   const ageHours = firstSeenMs ? (now.getTime() - firstSeenMs) / HOURLY_WINDOW_MS : 0;
   const alreadyBurst = recentBurst >= BURST_THRESHOLD;
@@ -126,5 +157,18 @@ export function updateBehaviorProfile(profile, toolKey, now = new Date()) {
   if (tp.velocity_window.length > VELOCITY_WINDOW_MAX) {
     tp.velocity_window = tp.velocity_window.slice(-VELOCITY_WINDOW_MAX);
   }
+  if (!tp.daily_counts) tp.daily_counts = {};
+  const key = dayKey(now);
+  tp.daily_counts[key] = (tp.daily_counts[key] || 0) + 1;
+  pruneDailyCounts(tp, now);
   return profile;
+}
+
+function pruneDailyCounts(toolProfile, now) {
+  const cutoff = new Date(now.getTime() - DAILY_COUNTS_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  for (const key of Object.keys(toolProfile.daily_counts)) {
+    if (new Date(`${key}T00:00:00Z`) < cutoff) {
+      delete toolProfile.daily_counts[key];
+    }
+  }
 }

@@ -106,7 +106,7 @@ Append-only JSONL file (`data/ledger.jsonl`). Every entry:
 }
 ```
 
-Hash chain: each entry's `hash` covers its own body **plus** `previous_hash`. Tamper any entry and every subsequent hash breaks. `GET /v1/ledger/verify` traverses the full chain and reports any break. Anchoring to an external witness endpoint is also supported (`src/ledgerAnchor.js`).
+Hash chain: each entry's `hash` covers its own body **plus** `previous_hash`. Tamper any entry and every subsequent hash breaks. When a secret is configured (`SCOPEZERO_LEDGER_SECRET`, else `SCOPEZERO_SIGNING_SECRET`) the chain hash is an **HMAC-SHA256** keyed by that secret — without the secret an attacker with write access to `ledger.jsonl` cannot recompute a valid chain after editing an entry, so a full rewrite is detected by `verify()` (plain SHA-256 fallback only when no secret is set). `GET /v1/ledger/verify` traverses the full chain and reports any break. Anchoring to an external witness endpoint is also supported (`src/ledgerAnchor.js`).
 
 ### 5. Store (`src/store.js`)
 SQLite via `node:sqlite` (`DatabaseSync`). State is a single JSON blob (`scopezero_state`) plus normalized relational tables (tenants, agents, missions, approvals, policies, policy_versions) for SQL querying. Postgres adapter available (`src/postgresStore.js`) with tenant row-level security.
@@ -127,16 +127,16 @@ State namespaces:
 Every tool call hits `/v1/tool-calls`. Policy engine runs. If `safe_to_execute = false`, the SDK wrapper blocks execution before any external API is called. This layer requires SDK integration.
 
 ### Layer 2: HTTP CONNECT proxy (network-level)
-Agents set `HTTP_PROXY=http://scopezero:8788`. All outbound HTTP and HTTPS routes through ScopeZero:
-- **HTTP**: request intercepted, destination checked against mission contracts
-- **HTTPS**: CONNECT tunnel gated on `Proxy-Authorization: Bearer <jwt>`; destination host checked against `action_contracts[].destinations`; TCP tunnel created via `node:net` only if allowed
+Agents set `HTTP_PROXY=http://scopezero:8788`. Outbound traffic routes through ScopeZero:
+- **HTTPS** (`CONNECT`): before any tunnel opens, `evaluateProxyConnect` (`src/proxyEnforcer.js`) binds the connection to a mission and requires **all** of: valid signature (`verifyMissionCapsule`), unexpired, `status: active`, the requesting agent matches `mission.agent_id`, and the destination host is in `action_contracts[].destinations`. Any failure → `403` with a distinct reason, logged to the ledger. Only then is a TCP tunnel created via `node:net`. This means an expired or tampered mission cannot open a tunnel even to an otherwise-allowed host.
+- **Plain HTTP**: not forwarded. Cleartext HTTP can't be bound to a mission the way `CONNECT` is, so it is refused explicitly (`403 scopezero_proxy_http_unsupported`) — fail closed. Use HTTPS.
 
-Agent that skips the SDK but uses the proxy is still blocked at the network layer. `GET /v1/deployment/lockdown` returns Docker flags and K8s env patch.
+**Enforcement granularity (honest scope):** the proxy enforces *destination host + live mission*, not per-request action — TLS bodies are opaque, so once a host is in-contract the tunnel carries any operation to it. Action/data-class/operation enforcement is the gateway/SDK layer's job (Layer 1); the proxy's job is fail-closed, mission-bound, audited egress allow-listing. The "an agent that skips the SDK is still contained" guarantee holds **only with the K8s NetworkPolicy applied** (kernel-level egress block); without it the proxy is honor-system, since a raw socket can ignore `HTTP_PROXY`. `GET /v1/deployment/lockdown` returns Docker flags and K8s env patch. See `examples/breach-containment-demo.js` for an executable end-to-end proof.
 
 ### Layer 3: Kubernetes admission webhooks (enforcement at pod creation)
-`GET /v1/deployment/k8s-manifests` returns three manifests applied together:
+`GET /v1/deployment/k8s-manifests` returns four manifests applied together (two NetworkPolicies + two webhooks):
 
-**NetworkPolicy** — labels-based default-deny egress. Pod labelled `scopezero.io/enforce: true` can only reach the ScopeZero proxy service + DNS (port 53). All other TCP connections dropped by the kernel.
+**NetworkPolicy** (two policies) — a namespace-wide `scopezero-default-deny-egress` (empty `podSelector`, so it selects **every** pod including unlabelled ones) plus a labelled `scopezero-enforce-proxy-egress`. Both permit egress only to the ScopeZero proxy service + DNS — and DNS is pinned to the in-cluster resolver (`kube-system` / `k8s-app: kube-dns`), not `0.0.0.0/0`, to close the open-DNS exfiltration channel (an injected agent can otherwise tunnel data out as queries to its own nameserver). All other TCP connections are dropped by the kernel. The default-deny policy means a pod that forgot the `scopezero.io/enforce: true` label is still boxed in rather than open. *(Full DNS-tunnel prevention also needs a filtering resolver that allow-lists names — pinning to kube-dns kills the direct-to-arbitrary-resolver path, not recursive exfil; on the roadmap.)*
 
 **MutatingWebhookConfiguration** (`POST /v1/admission/mutate`) — K8s API server calls ScopeZero before any pod starts. JSON Patch injects `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `NO_PROXY` into every container that's missing them. Developer forgets → automatically enforced.
 
@@ -173,8 +173,9 @@ Per `(tenant, agent, tool)` profile stored in the behavior store. Analysis runs 
 | Established | `calls ≥ 20` + UTC hour with 0 history | `off_hours_activity` | medium |
 | Established | `≥ 10 calls in last 5 min` | `burst_absolute` | high |
 | Established | `hourly rate > max(5, baseline × 3)` | `velocity_spike` | high |
+| Any phase | `calls today ≥ daily cap` (500 default, 50 high-risk) | `sustained_volume` | high |
 
-`high` severity + `allow` verdict → escalated to `approval`. Risk delta added to `verdict.risk_score`. Burst check fires even during cold start.
+`high` severity + `allow` verdict → escalated to `approval`. Risk delta added to `verdict.risk_score`. Burst check fires even during cold start. The `sustained_volume` ceiling is **baseline-independent** — it closes the low-and-slow gap where an attacker drips calls under the burst/velocity thresholds, or first inflates the baseline so `baseline × 3` becomes huge. Caps are configurable per tenant (`behavior_daily_volume_cap`, `behavior_daily_volume_cap_high_risk`).
 
 ---
 
@@ -191,7 +192,7 @@ ScopeZero as the security layer for the MCP ecosystem. Every external MCP server
 
 **Trust decay:** verified servers not re-reviewed in 180 days auto-demote to `community`. Servers not refreshed in 90 days flagged `stale`.
 
-**CVE signals:** `POST /v1/mcp/servers/:id/refresh` queries the OSV API (`api.osv.dev`) for the server's npm package. Results written to `server.trust_signals.{ known_cves, cve_ids, signal_summary }`.
+**CVE signals:** `POST /v1/mcp/servers/:id/refresh` queries the OSV API (`api.osv.dev`) for the server's npm package. Results written to `server.trust_signals.{ known_cves, cve_ids, signal_summary }`. A background scheduler (`src/mcpRefreshScheduler.js`) refreshes every registered server that has a `package_name` on a fixed interval, configurable via `SCOPEZERO_MCP_REFRESH_INTERVAL_HOURS` (unset/0 = manual only), so newly disclosed CVEs surface without an operator triggering a refresh.
 
 Pre-seeded well-known servers: GitHub MCP Server (verified), MCP Filesystem/PostgreSQL/Slack servers (community).
 

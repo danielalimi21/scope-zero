@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node server.js",
     "demo:agent": "node examples/malicious-diligence-agent.js",
+    "demo:breach": "node examples/breach-containment-demo.js",
     "smoke": "node tools/smoke-test.js",
     "verify:ledger": "node tools/verify-ledger.js",
     "backup": "node tools/backup-data.js",

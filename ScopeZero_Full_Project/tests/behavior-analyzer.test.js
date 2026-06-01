@@ -203,6 +203,44 @@ test("cold start does not fire once baseline is reached", () => {
   assert.ok(!anomalies.find(a => a.code === "cold_start_observation"));
 });
 
+// Low-and-slow / baseline-independent daily ceiling
+
+test("sustained_volume fires when a high-risk tool exceeds its daily cap without bursting", () => {
+  const now = new Date();
+  const profile = makeProfile("t1", "a1");
+  // 50 gmail.send calls today, spaced 5 minutes apart → never 10-in-5-min, never
+  // a velocity spike, but crosses the high-risk daily ceiling of 50.
+  for (let i = 0; i < 50; i++) {
+    updateBehaviorProfile(profile, "gmail.send", new Date(now.getTime() - (50 - i) * 5 * 60 * 1000));
+  }
+  const { anomalies } = analyzeToolCallBehavior(profile, "gmail.send", now);
+  const sustained = anomalies.find(a => a.code === "sustained_volume");
+  assert.ok(sustained, "sustained_volume expected once the daily ceiling is crossed");
+  assert.equal(sustained.severity, "high");
+  assert.ok(!anomalies.find(a => a.code === "burst_absolute"), "spacing avoids burst");
+  assert.ok(!anomalies.find(a => a.code === "velocity_spike"), "spacing avoids velocity spike");
+});
+
+test("sustained_volume respects a configurable cap", () => {
+  const now = new Date();
+  const profile = makeProfile("t1", "a1");
+  for (let i = 0; i < 5; i++) {
+    updateBehaviorProfile(profile, "drive.read", new Date(now.getTime() - (5 - i) * 10 * 60 * 1000));
+  }
+  const { anomalies } = analyzeToolCallBehavior(profile, "drive.read", now, { dailyVolumeCap: 5 });
+  assert.ok(anomalies.find(a => a.code === "sustained_volume"), "fires at the configured cap");
+});
+
+test("sustained_volume does not fire under the daily cap", () => {
+  const now = new Date();
+  const profile = makeProfile("t1", "a1");
+  for (let i = 0; i < 30; i++) {
+    updateBehaviorProfile(profile, "gmail.send", new Date(now.getTime() - (30 - i) * 5 * 60 * 1000));
+  }
+  const { anomalies } = analyzeToolCallBehavior(profile, "gmail.send", now);
+  assert.ok(!anomalies.find(a => a.code === "sustained_volume"));
+});
+
 test("burst still fires during cold start phase", () => {
   const now = new Date();
   const profile = makeProfile("t1", "a1");

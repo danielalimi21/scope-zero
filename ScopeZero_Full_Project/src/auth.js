@@ -1,4 +1,4 @@
-import { hmacSha256, nowIso, stableStringify } from "./crypto.js";
+import { hmacSha256, nowIso, stableStringify, timingSafeEqualStr } from "./crypto.js";
 import { httpError } from "./runtime.js";
 
 const ROLE_PERMISSIONS = {
@@ -77,8 +77,11 @@ export class AuthService {
     if (header.alg === "RS256" && this.jwksUrl) {
       return this.verifyOidcToken({ token, encodedHeader, encodedPayload, signature, header });
     }
+    if (header.alg !== "HS256") {
+      throw httpError(401, "invalid_token", `Unsupported token algorithm: ${header.alg}.`);
+    }
     const expected = base64urlHex(hmacSha256(this.secret, `${encodedHeader}.${encodedPayload}`));
-    if (signature !== expected) {
+    if (!timingSafeEqualStr(signature, expected)) {
       throw httpError(401, "invalid_token", "Token signature failed verification.");
     }
     const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));

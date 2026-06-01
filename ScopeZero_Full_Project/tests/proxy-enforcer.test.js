@@ -4,8 +4,10 @@ import {
   parseProxyAuth,
   parseConnectTarget,
   isDestinationAllowed,
+  evaluateProxyConnect,
   buildDeploymentLockdown
 } from "../src/proxyEnforcer.js";
+import { createMissionCapsule } from "../src/capsules.js";
 
 // parseProxyAuth
 
@@ -84,6 +86,92 @@ test("isDestinationAllowed blocks when mission is null", () => {
 test("isDestinationAllowed blocks when no contracts have destinations", () => {
   const emptyMission = { action_contracts: [{ tools: ["x"], destinations: [] }] };
   assert.equal(isDestinationAllowed("api.github.com", emptyMission), false);
+});
+
+// evaluateProxyConnect — pre-tunnel authorization
+
+const PROXY_SECRET = "proxy-test-secret";
+
+function liveMission() {
+  return createMissionCapsule(
+    {
+      tenant_id: "tenant_contoso",
+      agent_id: "agent.proxy",
+      delegated_by: "owner@example.com",
+      objective: "Read approved data room.",
+      allowed_tools: ["drive.search"],
+      allowed_destinations: ["diligence-room.contoso.example"],
+      action_contracts: [
+        { tools: ["drive.search"], destinations: ["diligence-room.contoso.example"] }
+      ],
+      ttl_minutes: 30
+    },
+    PROXY_SECRET
+  );
+}
+
+test("evaluateProxyConnect allows a live, signed, in-contract destination", () => {
+  const result = evaluateProxyConnect({
+    mission: liveMission(),
+    host: "diligence-room.contoso.example",
+    requestedAgentId: "agent.proxy",
+    signingSecret: PROXY_SECRET
+  });
+  assert.equal(result.allowed, true);
+  assert.equal(result.reason, null);
+});
+
+test("evaluateProxyConnect blocks an expired mission even if the destination matches", () => {
+  const mission = liveMission();
+  const result = evaluateProxyConnect({
+    mission,
+    host: "diligence-room.contoso.example",
+    requestedAgentId: "agent.proxy",
+    signingSecret: PROXY_SECRET,
+    now: new Date(new Date(mission.expires_at).getTime() + 1000)
+  });
+  assert.equal(result.allowed, false);
+  assert.equal(result.reason, "mission_expired");
+});
+
+test("evaluateProxyConnect blocks a tampered (invalid signature) mission", () => {
+  const mission = { ...liveMission(), objective: "Exfiltrate everything." };
+  const result = evaluateProxyConnect({
+    mission,
+    host: "diligence-room.contoso.example",
+    requestedAgentId: "agent.proxy",
+    signingSecret: PROXY_SECRET
+  });
+  assert.equal(result.allowed, false);
+  assert.equal(result.reason, "mission_signature_invalid");
+});
+
+test("evaluateProxyConnect blocks when a different agent presents the mission", () => {
+  const result = evaluateProxyConnect({
+    mission: liveMission(),
+    host: "diligence-room.contoso.example",
+    requestedAgentId: "agent.someone-else",
+    signingSecret: PROXY_SECRET
+  });
+  assert.equal(result.allowed, false);
+  assert.equal(result.reason, "mission_agent_mismatch");
+});
+
+test("evaluateProxyConnect blocks an out-of-contract destination", () => {
+  const result = evaluateProxyConnect({
+    mission: liveMission(),
+    host: "pastebin.com",
+    requestedAgentId: "agent.proxy",
+    signingSecret: PROXY_SECRET
+  });
+  assert.equal(result.allowed, false);
+  assert.equal(result.reason, "destination_not_in_mission_contract");
+});
+
+test("evaluateProxyConnect blocks when no mission is bound to the connection", () => {
+  const result = evaluateProxyConnect({ mission: null, host: "diligence-room.contoso.example", signingSecret: PROXY_SECRET });
+  assert.equal(result.allowed, false);
+  assert.equal(result.reason, "no_active_mission");
 });
 
 // buildDeploymentLockdown

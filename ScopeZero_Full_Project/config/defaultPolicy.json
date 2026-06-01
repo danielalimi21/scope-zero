@@ -17,6 +17,8 @@
   "financial_approval_threshold": 50000,
   "admin_privilege_requires_approval": true,
   "sensitive_data_block_level": 4,
+  "behavior_daily_volume_cap": 500,
+  "behavior_daily_volume_cap_high_risk": 50,
   "decision_cache_enabled": true,
   "decision_cache_ttl_ms": 5000,
   "high_impact_action_types": [

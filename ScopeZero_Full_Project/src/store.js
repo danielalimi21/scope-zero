@@ -4,12 +4,27 @@ import { DatabaseSync } from "node:sqlite";
 import { createId, nowIso, sha256, stableStringify } from "./crypto.js";
 import { buildMcpServerRecord, WELL_KNOWN_MCP_SERVERS } from "./mcpTrustRegistry.js";
 
+// Top-level state collections that are mirrored into queryable relational
+// tables. Everything else (behavior_profiles, sessions, mcp_servers,
+// agent_certs, metrics) is read by the app from the in-memory state blob and is
+// never queried via SQL, so it is not mirrored.
+const MIRRORED_TABLES = ["tenants", "agents", "missions", "approvals", "policies", "policy_versions"];
+
 export class Store {
   constructor(dbPath, defaultPolicy) {
     this.dbPath = dbPath;
     this.defaultPolicy = defaultPolicy;
     this.state = null;
     this.db = null;
+    // Tracks which mirrored tables changed since the last persist so save()
+    // only rebuilds those, instead of DELETE+INSERTing all six on every write.
+    this.dirtyTables = new Set();
+  }
+
+  markDirty(...tables) {
+    for (const table of tables) {
+      this.dirtyTables.add(table);
+    }
   }
 
   async init() {
@@ -17,6 +32,8 @@ export class Store {
     this.db = new DatabaseSync(this.dbPath);
     this.migrate();
     this.state = this.loadState() || (await this.loadLegacyJsonState()) || createSeedState(this.defaultPolicy);
+    // First persist rebuilds every mirror table from loaded/seed state.
+    this.markDirty(...MIRRORED_TABLES);
     await this.save();
   }
 
@@ -108,37 +125,65 @@ export class Store {
          ON CONFLICT(id) DO UPDATE SET body = excluded.body, updated_at = CURRENT_TIMESTAMP`
       )
       .run("primary", body);
-    this.syncRelationalTables();
+    if (this.dirtyTables.size > 0) {
+      this.syncRelationalTables(this.dirtyTables);
+      this.dirtyTables.clear();
+    }
   }
 
-  syncRelationalTables() {
+  // Rebuilds only the mirror tables flagged dirty since the last save. A
+  // per-tool-call write (behavior/session/metrics) touches no mirrored
+  // collection and so skips the relational rebuild entirely.
+  syncRelationalTables(tables = new Set(MIRRORED_TABLES)) {
+    const syncers = {
+      tenants: () => {
+        this.db.exec("DELETE FROM tenants");
+        const insert = this.db.prepare("INSERT INTO tenants (tenant_id, name, plan, body) VALUES (?, ?, ?, ?)");
+        for (const tenant of this.state.tenants) {
+          insert.run(tenant.tenant_id, tenant.name, tenant.plan, JSON.stringify(tenant));
+        }
+      },
+      agents: () => {
+        this.db.exec("DELETE FROM agents");
+        const insert = this.db.prepare("INSERT INTO agents (tenant_id, agent_id, owner, status, body) VALUES (?, ?, ?, ?, ?)");
+        for (const agent of this.state.agents) {
+          insert.run(agent.tenant_id, agent.agent_id, agent.owner, agent.status, JSON.stringify(agent));
+        }
+      },
+      missions: () => {
+        this.db.exec("DELETE FROM missions");
+        const insert = this.db.prepare("INSERT INTO missions (id, tenant_id, agent_id, status, body) VALUES (?, ?, ?, ?, ?)");
+        for (const mission of this.state.missions) {
+          insert.run(mission.id, mission.tenant_id, mission.agent_id, mission.status, JSON.stringify(mission));
+        }
+      },
+      approvals: () => {
+        this.db.exec("DELETE FROM approvals");
+        const insert = this.db.prepare("INSERT INTO approvals (id, tenant_id, agent_id, status, body) VALUES (?, ?, ?, ?, ?)");
+        for (const approval of this.state.approvals) {
+          insert.run(approval.id, approval.tenant_id, approval.agent_id, approval.status, JSON.stringify(approval));
+        }
+      },
+      policies: () => {
+        this.db.exec("DELETE FROM policies");
+        const insert = this.db.prepare("INSERT INTO policies (tenant_id, body) VALUES (?, ?)");
+        for (const [tenantId, policy] of Object.entries(this.state.policies)) {
+          insert.run(tenantId, JSON.stringify(policy));
+        }
+      },
+      policy_versions: () => {
+        this.db.exec("DELETE FROM policy_versions");
+        const insert = this.db.prepare("INSERT INTO policy_versions (id, tenant_id, version, status, body, created_at, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        for (const version of this.state.policy_versions || []) {
+          insert.run(version.id, version.tenant_id, version.version, version.status, JSON.stringify(version), version.created_at, version.approved_at || null);
+        }
+      }
+    };
+
     this.db.exec("BEGIN IMMEDIATE TRANSACTION");
     try {
-      this.db.exec("DELETE FROM tenants; DELETE FROM agents; DELETE FROM missions; DELETE FROM approvals; DELETE FROM policies; DELETE FROM policy_versions;");
-      const insertTenant = this.db.prepare("INSERT INTO tenants (tenant_id, name, plan, body) VALUES (?, ?, ?, ?)");
-      const insertAgent = this.db.prepare("INSERT INTO agents (tenant_id, agent_id, owner, status, body) VALUES (?, ?, ?, ?, ?)");
-      const insertMission = this.db.prepare("INSERT INTO missions (id, tenant_id, agent_id, status, body) VALUES (?, ?, ?, ?, ?)");
-      const insertApproval = this.db.prepare("INSERT INTO approvals (id, tenant_id, agent_id, status, body) VALUES (?, ?, ?, ?, ?)");
-      const insertPolicy = this.db.prepare("INSERT INTO policies (tenant_id, body) VALUES (?, ?)");
-      const insertPolicyVersion = this.db.prepare("INSERT INTO policy_versions (id, tenant_id, version, status, body, created_at, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
-
-      for (const tenant of this.state.tenants) {
-        insertTenant.run(tenant.tenant_id, tenant.name, tenant.plan, JSON.stringify(tenant));
-      }
-      for (const agent of this.state.agents) {
-        insertAgent.run(agent.tenant_id, agent.agent_id, agent.owner, agent.status, JSON.stringify(agent));
-      }
-      for (const mission of this.state.missions) {
-        insertMission.run(mission.id, mission.tenant_id, mission.agent_id, mission.status, JSON.stringify(mission));
-      }
-      for (const approval of this.state.approvals) {
-        insertApproval.run(approval.id, approval.tenant_id, approval.agent_id, approval.status, JSON.stringify(approval));
-      }
-      for (const [tenantId, policy] of Object.entries(this.state.policies)) {
-        insertPolicy.run(tenantId, JSON.stringify(policy));
-      }
-      for (const version of this.state.policy_versions || []) {
-        insertPolicyVersion.run(version.id, version.tenant_id, version.version, version.status, JSON.stringify(version), version.created_at, version.approved_at || null);
+      for (const table of tables) {
+        syncers[table]?.();
       }
       this.db.exec("COMMIT");
     } catch (error) {
@@ -172,6 +217,7 @@ export class Store {
       policy_hash: sha256(stableStringify({ ...this.getPolicy(tenantId), ...policyPatch }))
     };
     this.state.policy_versions ||= [];
+    this.markDirty("policies", "policy_versions");
     this.state.policy_versions.push({
       id: createId("policyver", `${tenantId}:${activeVersion}`),
       tenant_id: tenantId,
@@ -214,6 +260,7 @@ export class Store {
       policy_hash: sha256(stableStringify(policy))
     };
     this.state.policy_versions.push(proposal);
+    this.markDirty("policy_versions");
     await this.save();
     return proposal;
   }
@@ -233,6 +280,7 @@ export class Store {
       proposal.policy.policy_hash = proposal.policy_hash;
       this.state.policies[proposal.tenant_id] = proposal.policy;
     }
+    this.markDirty("policies", "policy_versions");
     await this.save();
     return proposal;
   }
@@ -250,6 +298,7 @@ export class Store {
     } else {
       this.state.agents.push(agent);
     }
+    this.markDirty("agents");
     await this.save();
     return agent;
   }
@@ -261,6 +310,7 @@ export class Store {
   async addMission(capsule) {
     this.assertTenant(capsule.tenant_id);
     this.state.missions.push(capsule);
+    this.markDirty("missions");
     await this.save();
     return capsule;
   }
@@ -276,6 +326,7 @@ export class Store {
   async addApproval(approval) {
     this.assertTenant(approval.tenant_id);
     this.state.approvals.push(approval);
+    this.markDirty("approvals");
     await this.save();
     return approval;
   }
@@ -286,6 +337,7 @@ export class Store {
       return null;
     }
     Object.assign(approval, patch);
+    this.markDirty("approvals");
     await this.save();
     return approval;
   }
@@ -340,6 +392,10 @@ export class Store {
       all.find(s => s.server_id === serverId && s.tenant_id === null) ||
       null
     );
+  }
+
+  listAllMcpServers() {
+    return this.state.mcp_servers || [];
   }
 
   listMcpServers({ tenantId = null, trustLevel = null } = {}) {

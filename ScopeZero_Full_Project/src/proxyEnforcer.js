@@ -3,6 +3,36 @@
 // "Proxy-Authorization: Bearer <jwt>" on every request so ScopeZero
 // can identify the mission before tunnelling the connection through.
 
+import { verifyMissionCapsule } from "./capsules.js";
+
+// Full pre-tunnel authorization for a CONNECT request. A connection is only
+// opened when it is bound to a mission that is real (signature valid), live
+// (unexpired + active), owned by the requesting agent, and whose action
+// contracts permit the destination host. Every failure has a distinct reason
+// so the ledger records *why* a tunnel was refused. Pure + deterministic
+// (`now`/`signingSecret` injectable) so it is unit-testable without sockets.
+export function evaluateProxyConnect({ mission, host, requestedAgentId = null, signingSecret = "", now = new Date() }) {
+  if (!mission) {
+    return { allowed: false, reason: "no_active_mission", mission_id: null };
+  }
+  if (signingSecret && !verifyMissionCapsule(mission, signingSecret)) {
+    return { allowed: false, reason: "mission_signature_invalid", mission_id: mission.id || null };
+  }
+  if (!mission.expires_at || new Date(mission.expires_at).getTime() < now.getTime()) {
+    return { allowed: false, reason: "mission_expired", mission_id: mission.id || null };
+  }
+  if (mission.status && mission.status !== "active") {
+    return { allowed: false, reason: "mission_inactive", mission_id: mission.id || null };
+  }
+  if (requestedAgentId && mission.agent_id && mission.agent_id !== requestedAgentId) {
+    return { allowed: false, reason: "mission_agent_mismatch", mission_id: mission.id || null };
+  }
+  if (!isDestinationAllowed(host, mission)) {
+    return { allowed: false, reason: "destination_not_in_mission_contract", mission_id: mission.id || null };
+  }
+  return { allowed: true, reason: null, mission_id: mission.id || null };
+}
+
 export function parseProxyAuth(req) {
   const header = (req.headers?.["proxy-authorization"] || "").trim();
   if (header.startsWith("Bearer ")) {

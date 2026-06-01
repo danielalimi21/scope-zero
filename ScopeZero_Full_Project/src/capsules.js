@@ -1,4 +1,4 @@
-import { createId, hmacSha256, nowIso, stableStringify } from "./crypto.js";
+import { createId, hmacSha256, nowIso, stableStringify, timingSafeEqualStr } from "./crypto.js";
 import { buildDefaultActionContracts } from "./actionAuthorization.js";
 
 export function createMissionCapsule(input, signingSecret) {
@@ -47,7 +47,7 @@ export function verifyMissionCapsule(capsule, signingSecret) {
   }
 
   const expected = signCapsule(capsule, signingSecret).signature;
-  return capsule.signature === expected;
+  return timingSafeEqualStr(capsule.signature, expected);
 }
 
 export function isExpired(capsule) {

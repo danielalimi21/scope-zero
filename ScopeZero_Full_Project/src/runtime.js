@@ -20,7 +20,8 @@ export async function createRuntime({ rootDir, signingSecret, toolManifestResolv
     ? new PostgresStore({ connectionString: process.env.DATABASE_URL, defaultPolicy })
     : new Store(`${rootDir}/data/scopezero.db`, defaultPolicy);
   const ledger = new Ledger(`${rootDir}/data/ledger.jsonl`, {
-    anchor: createLedgerAnchorFromEnv(process.env)
+    anchor: createLedgerAnchorFromEnv(process.env),
+    secret: process.env.SCOPEZERO_LEDGER_SECRET || signingSecret
   });
   await store.init();
   await ledger.init();
@@ -206,7 +207,9 @@ export class ScopeZeroRuntime {
       actionDescriptor,
       classification,
       externalDestination,
-      currentSessionRisk
+      currentSessionRisk,
+      promptInfluence,
+      missionAlignment
     });
     const cached = capsuleValid ? this.readDecisionCache(cacheKey, policy) : null;
 
@@ -297,7 +300,10 @@ export class ScopeZeroRuntime {
     const now = new Date();
     const behaviorProfile = this.store.getBehaviorProfile(input.tenant_id, input.agent_id)
       || createEmptyProfile(input.tenant_id, input.agent_id);
-    const { anomalies, risk_delta } = analyzeToolCallBehavior(behaviorProfile, input.tool, now);
+    const { anomalies, risk_delta } = analyzeToolCallBehavior(behaviorProfile, input.tool, now, {
+      dailyVolumeCap: policy.behavior_daily_volume_cap,
+      dailyVolumeCapHighRisk: policy.behavior_daily_volume_cap_high_risk
+    });
     if (anomalies.length > 0) {
       verdict.behavioral_anomalies = anomalies;
       verdict.risk_score = Math.min(100, (verdict.risk_score || 0) + risk_delta);
@@ -464,6 +470,36 @@ export class ScopeZeroRuntime {
     return { server, evidence };
   }
 
+  // Refresh trust signals (OSV CVE lookup + time-based decay) for every
+  // registered MCP server that has a package_name. Used by the scheduled
+  // background refresh so the registry does not rely on manual /refresh calls.
+  async refreshAllMcpServers({ fetchFn = undefined } = {}) {
+    const servers = (this.store.listAllMcpServers
+      ? this.store.listAllMcpServers()
+      : this.store.listMcpServers({ tenantId: null })
+    ).filter((server) => server.package_name);
+
+    const results = [];
+    for (const server of servers) {
+      try {
+        const { server: refreshed } = await this.refreshMcpServerTrust({
+          server_id: server.server_id,
+          tenant_id: server.tenant_id ?? null,
+          fetchFn
+        });
+        results.push({
+          server_id: server.server_id,
+          tenant_id: server.tenant_id ?? null,
+          signal_summary: refreshed.trust_signals?.signal_summary || null,
+          demoted: refreshed.trust_signals?.demoted || false
+        });
+      } catch (error) {
+        results.push({ server_id: server.server_id, tenant_id: server.tenant_id ?? null, error: error.message });
+      }
+    }
+    return { refreshed_at: nowIso(), candidates: servers.length, results };
+  }
+
   async evaluateMcpToolCall(input) {
     requireFields(input, ["tenant_id", "agent_id", "mission_id", "server_id", "tool"]);
     const server = this.store.getMcpServer(input.server_id, input.tenant_id);
@@ -577,7 +613,7 @@ export class ScopeZeroRuntime {
   }
 }
 
-function decisionCacheKey({ input, policy, mission, actionDescriptor, classification, externalDestination, currentSessionRisk }) {
+function decisionCacheKey({ input, policy, mission, actionDescriptor, classification, externalDestination, currentSessionRisk, promptInfluence, missionAlignment }) {
   if (!policy.decision_cache_enabled) {
     return null;
   }
@@ -593,7 +629,7 @@ function decisionCacheKey({ input, policy, mission, actionDescriptor, classifica
     tool: actionDescriptor.tool,
     operation: actionDescriptor.operation,
     action_type: actionDescriptor.action_type,
-    data_class: classification.label,
+    data_class: actionDescriptor.data_class || classification.label,
     destination: {
       address: actionDescriptor.destination?.address || "",
       external: Boolean(externalDestination)
@@ -601,7 +637,14 @@ function decisionCacheKey({ input, policy, mission, actionDescriptor, classifica
     delegation_depth: Number(input.delegation_depth || 0),
     money_amount: Number(input.money?.amount || 0),
     privilege_admin: Boolean(input.privilege?.admin),
-    risk_bucket: riskBucket
+    risk_bucket: riskBucket,
+    // Context-derived verdict inputs MUST be in the key. Without them a clean
+    // cached "allow" would be served to a request carrying a poisoned context
+    // (prompt injection) or a drifted action, skipping the policy evaluation
+    // that would have caught it.
+    prompt_influenced: Boolean(promptInfluence?.influenced),
+    mission_aligned: missionAlignment ? missionAlignment.aligned !== false : true,
+    self_reported_misaligned: input.context?.mission_aligned === false
   }));
 }
 

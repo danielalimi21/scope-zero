@@ -1,4 +1,4 @@
-import { createId, hmacSha256, nowIso, sha256, stableStringify } from "./crypto.js";
+import { createId, hmacSha256, nowIso, sha256, stableStringify, timingSafeEqualStr } from "./crypto.js";
 
 const CERT_VERSION = "scopezero.agent.cert.v1";
 export const DEFAULT_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
@@ -52,12 +52,12 @@ export function verifyAgentCertificate(cert, signingSecret) {
   // Recompute fingerprint from body (exclude cert_id, fingerprint, signature, status)
   const { cert_id, fingerprint, signature, status, ...body } = cert;
   const expectedFingerprint = sha256(stableStringify(body));
-  if (fingerprint !== expectedFingerprint) {
+  if (!timingSafeEqualStr(fingerprint, expectedFingerprint)) {
     return { valid: false, code: "cert-fingerprint-mismatch", message: "Certificate body has been tampered with." };
   }
 
   const expectedSig = signCert(fingerprint, cert.agent_id, cert.tenant_id, cert.expires_at, signingSecret);
-  if (signature !== expectedSig) {
+  if (!timingSafeEqualStr(signature, expectedSig)) {
     return { valid: false, code: "cert-signature-invalid", message: "Certificate signature verification failed." };
   }
 

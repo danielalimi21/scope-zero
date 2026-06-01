@@ -47,7 +47,15 @@ export function describeActionRequest(request = {}, classification = { label: "p
   const toolManifest = resolveToolManifest(tool, manifestSource, request.tool_manifest, policy.tool_manifests);
   const operation = String(toolManifest?.operation || request.operation || inferOperation({ tool, action })).toLowerCase();
   const actionType = String(toolManifest?.action_type || request.action_type || classifyActionType({ operation, tool, action, destination, manifest: toolManifest })).toLowerCase();
-  const dataClass = String(request.data_class || classification.label || "public").toLowerCase();
+  // Server-side classification is a floor: an agent may declare a HIGHER data
+  // class than detected, but never a lower one. Otherwise a request could carry
+  // restricted content while self-declaring "public" to slip past a contract's
+  // data-class ceiling.
+  const detectedClass = String(classification.label || "public").toLowerCase();
+  const declaredClass = request.data_class ? String(request.data_class).toLowerCase() : null;
+  const dataClass = declaredClass && dataClassRank(declaredClass) > dataClassRank(detectedClass)
+    ? declaredClass
+    : detectedClass;
 
   return {
     schema: policy.evidence_schema || "scopezero.action_authorization.v1",

@@ -1,12 +1,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createId, nowIso, sha256, stableStringify } from "./crypto.js";
+import { createId, hmacSha256, nowIso, sha256, stableStringify } from "./crypto.js";
 
 export class Ledger {
-  constructor(filePath, { anchor = null } = {}) {
+  constructor(filePath, { anchor = null, secret = "" } = {}) {
     this.filePath = filePath;
     this.previousHash = "genesis";
     this.anchor = anchor;
+    this.secret = secret || "";
+  }
+
+  // Keyed (HMAC-SHA256) chain hash when a secret is configured. Without the
+  // secret an attacker with write access to the ledger file can edit an entry
+  // and recompute every downstream plain-SHA-256 hash, so verify() would still
+  // pass. HMAC keying means forging a valid chain requires the signing secret.
+  // Falls back to plain SHA-256 when no secret is set (back-compat / tests).
+  chainHash(serialized) {
+    return this.secret ? hmacSha256(this.secret, serialized) : sha256(serialized);
   }
 
   async init() {
@@ -26,7 +36,7 @@ export class Ledger {
       previous_hash: this.previousHash,
       record
     };
-    entry.hash = sha256(stableStringify(entry));
+    entry.hash = this.chainHash(stableStringify(entry));
     this.previousHash = entry.hash;
     await fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`);
     await this.anchor?.record(entry);
@@ -54,7 +64,7 @@ export class Ledger {
 
     for (const [index, entry] of entries.entries()) {
       const { hash, ...unsigned } = entry;
-      const expectedHash = sha256(stableStringify(unsigned));
+      const expectedHash = this.chainHash(stableStringify(unsigned));
       if (entry.previous_hash !== expectedPrevious) {
         failures.push({
           index,

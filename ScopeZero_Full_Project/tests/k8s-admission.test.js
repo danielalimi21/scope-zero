@@ -4,6 +4,7 @@ import {
   handleValidateAdmission,
   handleMutateAdmission,
   generateNetworkPolicy,
+  generateDefaultDenyEgressPolicy,
   generateMutatingWebhookConfig,
   generateValidatingWebhookConfig,
   generateFullEnforcementManifests
@@ -154,6 +155,20 @@ test("NetworkPolicy blocks all egress except proxy and DNS", () => {
   assert.ok(ports.some(p => p.port === 53));
 });
 
+test("NetworkPolicy pins DNS egress to the cluster resolver, not 0.0.0.0", () => {
+  for (const policy of [
+    generateNetworkPolicy({ namespace: "agents" }),
+    generateDefaultDenyEgressPolicy({ namespace: "agents" })
+  ]) {
+    const dnsRule = policy.spec.egress.find(e => (e.ports || []).some(p => p.port === 53));
+    assert.ok(dnsRule, "a DNS egress rule exists");
+    assert.ok(dnsRule.to, "DNS egress must be scoped (not open to 0.0.0.0/0)");
+    const target = dnsRule.to[0];
+    assert.equal(target.namespaceSelector.matchLabels["kubernetes.io/metadata.name"], "kube-system");
+    assert.equal(target.podSelector.matchLabels["k8s-app"], "kube-dns");
+  }
+});
+
 test("MutatingWebhookConfig has failurePolicy Fail", () => {
   const cfg = generateMutatingWebhookConfig({ serviceHost: "scopezero.internal" });
   assert.equal(cfg.kind, "MutatingWebhookConfiguration");
@@ -178,11 +193,28 @@ test("ValidatingWebhookConfig covers CREATE and UPDATE operations", () => {
   assert.ok(ops.includes("UPDATE"));
 });
 
-test("generateFullEnforcementManifests returns all three kinds", () => {
+test("default-deny egress policy selects all pods and only allows proxy + DNS", () => {
+  const policy = generateDefaultDenyEgressPolicy({ namespace: "agents", scopezeroPort: 8788 });
+  assert.equal(policy.kind, "NetworkPolicy");
+  assert.equal(policy.metadata.name, "scopezero-default-deny-egress");
+  assert.equal(policy.metadata.namespace, "agents");
+  // Empty podSelector → applies to every pod, including unlabelled ones.
+  assert.deepEqual(policy.spec.podSelector, {});
+  assert.deepEqual(policy.spec.policyTypes, ["Egress"]);
+  const ports = policy.spec.egress.flatMap(e => e.ports || []);
+  assert.ok(ports.some(p => p.port === 8788));
+  assert.ok(ports.some(p => p.port === 53));
+});
+
+test("generateFullEnforcementManifests includes the namespace default-deny", () => {
   const manifests = generateFullEnforcementManifests({ serviceHost: "scopezero.internal" });
   const kinds = manifests.map(m => m.kind);
   assert.ok(kinds.includes("NetworkPolicy"));
   assert.ok(kinds.includes("MutatingWebhookConfiguration"));
   assert.ok(kinds.includes("ValidatingWebhookConfiguration"));
-  assert.equal(manifests.length, 3);
+  // Two NetworkPolicies now: namespace default-deny + labelled enforce.
+  const names = manifests.filter(m => m.kind === "NetworkPolicy").map(m => m.metadata.name);
+  assert.ok(names.includes("scopezero-default-deny-egress"));
+  assert.ok(names.includes("scopezero-enforce-proxy-egress"));
+  assert.equal(manifests.length, 4);
 });

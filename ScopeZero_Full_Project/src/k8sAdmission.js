@@ -11,6 +11,25 @@
 const PROXY_ENV_NAMES = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"];
 const NO_PROXY_VALUE = "localhost,127.0.0.1";
 
+// DNS egress pinned to the in-cluster resolver (kube-dns) rather than allowed to
+// any address. Allowing UDP/TCP 53 to 0.0.0.0/0 is an open exfiltration channel:
+// an injected agent can tunnel data out as DNS queries to its own nameserver.
+// Restricting to kube-dns kills the direct-to-arbitrary-resolver path.
+function dnsEgressRule() {
+  return {
+    to: [
+      {
+        namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } },
+        podSelector: { matchLabels: { "k8s-app": "kube-dns" } }
+      }
+    ],
+    ports: [
+      { protocol: "UDP", port: 53 },
+      { protocol: "TCP", port: 53 }
+    ]
+  };
+}
+
 // ── Validating webhook ──────────────────────────────────────────────────────
 
 export function handleValidateAdmission(admissionReview, expectedProxyUrl) {
@@ -94,13 +113,41 @@ export function generateNetworkPolicy({ namespace = "default", scopezeroPort = 8
           to: [{ podSelector: { matchLabels: { app: scopezeroServiceName } } }],
           ports: [{ protocol: "TCP", port: scopezeroPort }]
         },
+        // DNS to the cluster resolver only — not to arbitrary nameservers.
+        dnsEgressRule()
+      ]
+    }
+  };
+}
+
+// Namespace-wide default-deny egress. The labelled policy above only constrains
+// pods opting in with scopezero.io/enforce=true; an unlabelled pod would have no
+// egress policy selecting it and could reach anything. This policy selects EVERY
+// pod in the namespace (empty podSelector) and permits egress only to the
+// ScopeZero proxy and DNS, so a pod that forgot the enforce label is still boxed
+// in by default rather than open.
+export function generateDefaultDenyEgressPolicy({ namespace = "default", scopezeroPort = 8788, scopezeroServiceName = "scopezero" } = {}) {
+  return {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: {
+      name: "scopezero-default-deny-egress",
+      namespace,
+      annotations: {
+        "scopezero.io/purpose": "Default-deny egress for ALL pods in the namespace. Only the ScopeZero proxy and DNS are reachable, including for pods missing the scopezero.io/enforce label."
+      }
+    },
+    spec: {
+      // Empty podSelector → selects every pod in the namespace.
+      podSelector: {},
+      policyTypes: ["Egress"],
+      egress: [
         {
-          // Allow DNS — required for hostname resolution
-          ports: [
-            { protocol: "UDP", port: 53 },
-            { protocol: "TCP", port: 53 }
-          ]
-        }
+          to: [{ podSelector: { matchLabels: { app: scopezeroServiceName } } }],
+          ports: [{ protocol: "TCP", port: scopezeroPort }]
+        },
+        // DNS to the cluster resolver only — not to arbitrary nameservers.
+        dnsEgressRule()
       ]
     }
   };
@@ -162,6 +209,7 @@ export function generateValidatingWebhookConfig({ serviceHost, servicePort = 878
 // Returns all three manifests as an ordered array ready for `kubectl apply -f`
 export function generateFullEnforcementManifests({ serviceHost, servicePort = 8788, namespace = "default", caBundle = "" } = {}) {
   return [
+    generateDefaultDenyEgressPolicy({ namespace, scopezeroPort: servicePort }),
     generateNetworkPolicy({ namespace, scopezeroPort: servicePort }),
     generateMutatingWebhookConfig({ serviceHost, servicePort, namespace, caBundle }),
     generateValidatingWebhookConfig({ serviceHost, servicePort, caBundle })

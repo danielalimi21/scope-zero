@@ -14,7 +14,8 @@ import { Telemetry } from "./src/telemetry.js";
 import { createApprovalNotifierFromEnv } from "./src/approvalNotifier.js";
 import { enforceTenant } from "./src/tenantGuard.js";
 import { generateComplianceReport } from "./src/complianceReport.js";
-import { parseProxyAuth, parseConnectTarget, isDestinationAllowed, buildDeploymentLockdown } from "./src/proxyEnforcer.js";
+import { parseProxyAuth, parseConnectTarget, evaluateProxyConnect, buildDeploymentLockdown } from "./src/proxyEnforcer.js";
+import { createMcpRefreshSchedulerFromEnv } from "./src/mcpRefreshScheduler.js";
 import { handleValidateAdmission, handleMutateAdmission, generateFullEnforcementManifests } from "./src/k8sAdmission.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -77,6 +78,18 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 204, {});
     }
 
+    // Absolute-form request target → a plain-HTTP forward-proxy attempt. ScopeZero
+    // cannot bind cleartext HTTP to a mission the way it gates HTTPS via CONNECT,
+    // so refuse explicitly (fail closed) instead of falling through to a 404.
+    if (/^https?:\/\//i.test(req.url)) {
+      return sendJson(res, 403, {
+        error: {
+          code: "scopezero_proxy_http_unsupported",
+          message: "Plain HTTP forward-proxying is not supported. Use HTTPS so the connection is gated via CONNECT and bound to a signed mission."
+        }
+      });
+    }
+
     const url = new URL(req.url, `http://${req.headers.host}`);
 
     if (url.pathname === "/.well-known/jwks.json") {
@@ -110,6 +123,15 @@ server.listen(PORT, () => {
   console.log(`ScopeZero Gateway listening on http://localhost:${PORT}`);
 });
 
+// Background MCP trust refresh (OSV CVE + decay). Disabled unless
+// SCOPEZERO_MCP_REFRESH_INTERVAL_HOURS is set to a positive number.
+const mcpRefreshScheduler = createMcpRefreshSchedulerFromEnv(runtime, process.env, {
+  logger: (message) => console.log(`[mcp-refresh] ${message}`)
+});
+if (mcpRefreshScheduler.start()) {
+  console.log(`MCP trust refresh scheduled every ${process.env.SCOPEZERO_MCP_REFRESH_INTERVAL_HOURS}h.`);
+}
+
 // HTTP CONNECT proxy — intercepts HTTPS tunnels when agents run with HTTP_PROXY set.
 // Agent must send:  Proxy-Authorization: Bearer <jwt>
 server.on("connect", async (req, clientSocket, head) => {
@@ -124,14 +146,21 @@ server.on("connect", async (req, clientSocket, head) => {
     try {
       // Resolve principal from JWT bearer token
       const principal = proxyAuth.type === "bearer"
-        ? auth.verify(proxyAuth.token)
+        ? await auth.verifyToken(proxyAuth.token)
         : { tenant_id: proxyAuth.tenant_id, agent_id: proxyAuth.agent_id, subject: proxyAuth.agent_id };
 
       const tenantId = principal.tenant_id || "tenant_contoso";
-      const missionId = principal.mission_id || (proxyAuth.type === "mission" ? proxyAuth.mission_id : null);
+      const missionId = principal.mission_id || principal.claims?.mission_id || (proxyAuth.type === "mission" ? proxyAuth.mission_id : null);
       mission = missionId ? runtime.store.getMission(missionId, tenantId) : null;
-      allowed = isDestinationAllowed(host, mission);
-      if (!allowed) blockReason = "destination_not_in_mission_contract";
+      const requestedAgentId = principal.agent_id || principal.claims?.agent_id || (proxyAuth.type === "mission" ? proxyAuth.agent_id : null);
+      const decision = evaluateProxyConnect({
+        mission,
+        host,
+        requestedAgentId,
+        signingSecret: runtime.signingSecret
+      });
+      allowed = decision.allowed;
+      if (!allowed) blockReason = decision.reason;
 
       await runtime.ledger.append({
         event_type: allowed ? "proxy.connect.allowed" : "proxy.connect.blocked",
@@ -334,7 +363,7 @@ async function handleApi(req, res, url) {
     const caBundle = url.searchParams.get("ca_bundle") || "";
     return sendJson(res, 200, {
       description: "Apply all three manifests to enforce ScopeZero as the mandatory network gateway. failurePolicy: Fail on both webhooks means ScopeZero going down prevents new agent pods from starting.",
-      apply_order: ["NetworkPolicy", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration"],
+      apply_order: ["NetworkPolicy (default-deny-egress)", "NetworkPolicy (enforce-proxy-egress)", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration"],
       manifests: generateFullEnforcementManifests({ serviceHost, servicePort: PORT, namespace, caBundle })
     });
   }

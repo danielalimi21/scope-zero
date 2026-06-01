@@ -1,3 +1,5 @@
+import { resolveToolManifest } from "./toolManifest.js";
+
 const DATA_CLASS_RANK = {
   public: 1,
   internal: 2,
@@ -23,25 +25,28 @@ export function buildDefaultActionContracts(input = {}) {
   const allowedDataClasses = input.allowed_data_classes || ["public", "internal"];
   const allowedDestinations = input.allowed_destinations || [];
   return allowedTools.map((tool) => {
-    const operation = inferOperation({ tool, action: tool });
+    const manifest = resolveToolManifest(tool, input.tool_manifests);
+    const operation = manifest?.operation || inferOperation({ tool, action: tool });
     return {
       id: `contract.${tool.replace(/[^a-z0-9]+/gi, ".").replace(/^\.+|\.+$/g, "")}`,
       tools: [tool],
-      operations: operationsForTool(tool, operation),
+      operations: operationsForTool(tool, operation, manifest),
       data_classes: allowedDataClasses,
-      destinations: allowedDestinations,
+      destinations: allowedDestinations.length ? allowedDestinations : manifest?.destinations || [],
       max_delegation_depth: Number(input.max_delegation_depth ?? 1),
-      effect: HIGH_IMPACT_TYPES.has(operation) ? "approval" : "allow"
+      effect: manifest?.requires_approval_default || HIGH_IMPACT_TYPES.has(operation) ? "approval" : "allow",
+      tool_manifest_id: manifest?.tool_id || null
     };
   });
 }
 
-export function describeActionRequest(request = {}, classification = { label: "public" }, policy = {}) {
+export function describeActionRequest(request = {}, classification = { label: "public" }, policy = {}, manifestSource = null) {
   const tool = String(request.tool || "unknown.tool");
   const action = String(request.action || request.operation || "unspecified action");
-  const operation = String(request.operation || inferOperation({ tool, action })).toLowerCase();
   const destination = normalizeDestination(request.destination || {});
-  const actionType = String(request.action_type || classifyActionType({ operation, tool, action, destination })).toLowerCase();
+  const toolManifest = resolveToolManifest(tool, manifestSource, request.tool_manifest, policy.tool_manifests);
+  const operation = String(toolManifest?.operation || request.operation || inferOperation({ tool, action })).toLowerCase();
+  const actionType = String(toolManifest?.action_type || request.action_type || classifyActionType({ operation, tool, action, destination, manifest: toolManifest })).toLowerCase();
   const dataClass = String(request.data_class || classification.label || "public").toLowerCase();
 
   return {
@@ -49,6 +54,8 @@ export function describeActionRequest(request = {}, classification = { label: "p
     tool,
     action,
     operation,
+    operation_source: toolManifest ? "tool_manifest" : (request.operation ? "request" : "fallback_inference"),
+    claimed_operation: request.operation ? String(request.operation).toLowerCase() : null,
     action_type: actionType,
     vendor: tool.includes(".") ? tool.split(".")[0] : "custom",
     resource: request.resource || request.payload?.file || request.payload?.query || request.payload?.id || null,
@@ -57,7 +64,18 @@ export function describeActionRequest(request = {}, classification = { label: "p
     destination,
     delegation_depth: Number(request.delegation_depth || 0),
     money: request.money || null,
-    privilege: request.privilege || null
+    privilege: request.privilege || null,
+    tool_manifest: toolManifest ? {
+      tool_id: toolManifest.tool_id,
+      operation: toolManifest.operation,
+      action_type: toolManifest.action_type,
+      data_in_classes: toolManifest.data_in_classes,
+      data_out_classes: toolManifest.data_out_classes,
+      external_capable: toolManifest.external_capable,
+      mutating: toolManifest.mutating,
+      irreversible: toolManifest.irreversible,
+      requires_approval_default: toolManifest.requires_approval_default
+    } : null
   };
 }
 
@@ -150,7 +168,7 @@ function inferOperation({ tool = "", action = "" }) {
   return matched ? matched[0] : "execute";
 }
 
-function classifyActionType({ operation, tool, action, destination }) {
+function classifyActionType({ operation, tool, action, destination, manifest }) {
   if (operation === "external_send" || destination.external) {
     return "external_send";
   }
@@ -166,13 +184,19 @@ function classifyActionType({ operation, tool, action, destination }) {
   if (operation === "delegate") {
     return "delegate";
   }
+  if (manifest?.irreversible && manifest?.mutating) {
+    return "privilege_change";
+  }
   if (/\b(secret|token|key|credential)\b/i.test(`${tool} ${action}`)) {
     return "credential_access";
   }
   return operation;
 }
 
-function operationsForTool(tool, inferred) {
+function operationsForTool(tool, inferred, manifest = null) {
+  if (manifest) {
+    return [...new Set([manifest.operation, manifest.action_type, "execute"])];
+  }
   if (/search|scan|read|list/i.test(tool)) {
     return ["read", "search", "execute"];
   }

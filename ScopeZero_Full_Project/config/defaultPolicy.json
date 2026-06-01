@@ -8,6 +8,7 @@
   "strict_destination_enforcement": true,
   "mission_lock": true,
   "prompt_injection_shield": true,
+  "prompt_influence_threshold": 40,
   "sensitive_egress_guard": true,
   "approval_gates": true,
   "redact_sensitive_outputs": true,
@@ -16,6 +17,8 @@
   "financial_approval_threshold": 50000,
   "admin_privilege_requires_approval": true,
   "sensitive_data_block_level": 4,
+  "decision_cache_enabled": true,
+  "decision_cache_ttl_ms": 5000,
   "high_impact_action_types": [
     "external_send",
     "export",

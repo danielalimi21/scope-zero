@@ -1,6 +1,6 @@
 import { dataClassAllowed, destinationAllowed, evaluateActionContract } from "./actionAuthorization.js";
 
-export function evaluatePolicy({ request, mission, agent, policy, classification, promptInfluence, externalDestination, currentSessionRisk }) {
+export function evaluatePolicy({ request, mission, agent, policy, classification, promptInfluence, missionAlignment, externalDestination, currentSessionRisk }) {
   const reasons = [];
   const controls = [];
   let decision = "allow";
@@ -61,8 +61,11 @@ export function evaluatePolicy({ request, mission, agent, policy, classification
     decision = "block";
   }
 
-  if (policy.mission_lock && request.context?.mission_aligned === false) {
-    addRisk(42, "intent-drift", "Requested action no longer matches the approved mission.");
+  if (policy.mission_lock && missionAlignment?.aligned === false) {
+    addRisk(42, "intent-drift", `Server-side mission alignment failed: ${missionAlignment.reasons.join(", ")}.`);
+    decision = "block";
+  } else if (policy.mission_lock && !missionAlignment && request.context?.mission_aligned === false) {
+    addRisk(42, "intent-drift-self-reported", "Agent self-reported mission drift and no server-side alignment result was available.");
     decision = "block";
   }
 

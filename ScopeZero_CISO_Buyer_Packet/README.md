@@ -28,6 +28,10 @@ ScopeZero answers whether a specific autonomous action is authorized before exec
 - `12_Demo_Access_And_Evaluation.md` - customer-facing demo review guide.
 - `index.html` - browser-friendly one-page summary.
 - `demo/index.html` - interactive product walkthrough that can be opened in a browser.
+- `pitch_video/scopezero-pitch-video-voiced.mp4` - short sendable pitch video with human voiceover.
+- `pitch_video/scopezero-pitch-video.webm` - silent browser-export version of the pitch video.
+- `pitch_video/pitch-video.html` - browser version of the pitch video.
+- `pitch_video/voiceover-recording-script.md` - optional script for recording a human voiceover.
 
 ## Review Guidance
 
@@ -41,6 +45,7 @@ The recommended review order is:
 6. Product explanation and technical decision-engine deep dive.
 7. Demo access and evaluation guide.
 8. Interactive walkthrough in `demo/index.html`.
+9. Short pitch video in `pitch_video/scopezero-pitch-video-voiced.mp4`.
 
 The strongest evaluation question is:
 

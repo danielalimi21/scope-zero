@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ScopeZero Pitch Video</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #effaf7;
+        --muted: #a8bfbb;
+        --accent: #63e6ad;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #071013;
+        color: var(--ink);
+      }
+
+      main {
+        width: min(1180px, calc(100vw - 32px));
+        display: grid;
+        gap: 14px;
+      }
+
+      canvas {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        border: 1px solid rgba(190, 238, 229, 0.16);
+        border-radius: 8px;
+        background: #071013;
+        box-shadow: 0 26px 80px rgba(0, 0, 0, 0.4);
+      }
+
+      .controls {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+      }
+
+      button {
+        min-height: 42px;
+        border: 1px solid rgba(190, 238, 229, 0.16);
+        border-radius: 8px;
+        padding: 0 16px;
+        background: rgba(239, 250, 247, 0.06);
+        color: var(--ink);
+        font: inherit;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      button.primary {
+        color: #062019;
+        border-color: transparent;
+        background: var(--accent);
+      }
+
+      #status {
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <canvas id="stage" width="1280" height="720" aria-label="ScopeZero pitch video"></canvas>
+      <div class="controls">
+        <div>
+          <button class="primary" id="playButton" type="button">Replay Pitch</button>
+          <button id="recordButton" type="button">Export WebM</button>
+        </div>
+        <span id="status">Ready: ScopeZero product pitch.</span>
+      </div>
+    </main>
+
+    <script>
+      const canvas = document.getElementById("stage");
+      const ctx = canvas.getContext("2d");
+      const statusEl = document.getElementById("status");
+      const playButton = document.getElementById("playButton");
+      const recordButton = document.getElementById("recordButton");
+      const W = canvas.width;
+      const H = canvas.height;
+      const pageParams = new URLSearchParams(location.search);
+      const BASE_DURATION = 56000;
+      const requestedDuration = Number(pageParams.get("duration"));
+      const DURATION = Number.isFinite(requestedDuration) && requestedDuration > 10000
+        ? requestedDuration
+        : BASE_DURATION;
+      const TIMELINE_SCALE = DURATION / BASE_DURATION;
+      const VOICEOVER_SRC = pageParams.get("voiceover") || "";
+      const OUTPUT_FILE = pageParams.get("output") || (VOICEOVER_SRC ? "scopezero-pitch-video-voiced.webm" : "scopezero-pitch-video.webm");
+      let playStart = performance.now();
+      let recording = false;
+
+      const C = {
+        bg: "#071013",
+        panel: "#0d1d22",
+        panel2: "#10262b",
+        ink: "#effaf7",
+        muted: "#a8bfbb",
+        line: "rgba(190,238,229,0.17)",
+        accent: "#63e6ad",
+        blue: "#6bb8ff",
+        warn: "#f7c76b",
+        danger: "#ff7373"
+      };
+
+      const baseScenes = [
+        {
+          start: 0,
+          end: 7000,
+          tag: "SCOPEZERO",
+          title: "Action authorization for AI agents",
+          subtitle: "A runtime gateway between autonomous agents and the tools they use.",
+          visual: "console"
+        },
+        {
+          start: 7000,
+          end: 14000,
+          tag: "THE PROBLEM",
+          title: "AI agents are becoming backend actors",
+          subtitle: "They can open PRs, send messages, export data, call APIs, and change cloud permissions.",
+          visual: "actions"
+        },
+        {
+          start: 14000,
+          end: 21000,
+          tag: "THE GAP",
+          title: "Access is not the same as authorization",
+          subtitle: "IAM can say the agent has access. ScopeZero decides whether this action should execute.",
+          visual: "comparison"
+        },
+        {
+          start: 21000,
+          end: 29000,
+          tag: "WHERE IT SITS",
+          title: "Your backend checks with ScopeZero before the method runs",
+          subtitle: "Agent service to ScopeZero to GitHub, Slack, AWS, SaaS, APIs, or MCP tools.",
+          visual: "pipeline"
+        },
+        {
+          start: 29000,
+          end: 37000,
+          tag: "HOW IT WORKS",
+          title: "A deterministic check before every tool call",
+          subtitle: "Mission, method, data class, destination, prompt influence, privilege impact, and approval policy.",
+          visual: "engine"
+        },
+        {
+          start: 37000,
+          end: 45000,
+          tag: "DECISIONS",
+          title: "Allow safe work. Stop dangerous work.",
+          subtitle: "ScopeZero returns allow, block, redact, quarantine, pause, or human approval.",
+          visual: "decisions"
+        },
+        {
+          start: 45000,
+          end: 51000,
+          tag: "WHY IT MATTERS",
+          title: "It controls the action before impact",
+          subtitle: "Not another chatbot wrapper. Not after-the-fact logs. ScopeZero is the pre-execution control point.",
+          visual: "different"
+        },
+        {
+          start: 51000,
+          end: 56000,
+          tag: "PILOT",
+          title: "Start with one agent workflow",
+          subtitle: "One tool surface. One mission contract. One unsafe action stopped before execution.",
+          visual: "close"
+        }
+      ];
+
+      const scenes = baseScenes.map((scene) => ({
+        ...scene,
+        start: scene.start * TIMELINE_SCALE,
+        end: scene.end * TIMELINE_SCALE
+      }));
+
+      playButton.addEventListener("click", () => {
+        playStart = performance.now();
+      });
+
+      recordButton.addEventListener("click", () => {
+        if (pageParams.get("upload") === "1") {
+          recordToServer();
+        } else {
+          recordToDownload();
+        }
+      });
+
+      if (pageParams.get("record") === "1") {
+        setTimeout(() => recordToServer(), 700);
+      }
+
+      requestAnimationFrame(draw);
+
+      function draw(now) {
+        const t = (now - playStart) % DURATION;
+        drawFrame(t);
+        requestAnimationFrame(draw);
+      }
+
+      function drawFrame(t) {
+        const scene = scenes.find((item) => t >= item.start && t < item.end) || scenes[0];
+        const local = clamp((t - scene.start) / (scene.end - scene.start), 0, 1);
+        const a = ease(local);
+
+        drawBackground(t);
+        drawChrome();
+        drawNarrative(scene, a);
+
+        const visualX = 700;
+        const visualY = 150;
+        const visualW = 510;
+        const visualH = 430;
+        if (scene.visual === "console") drawConsoleVisual(visualX, visualY, visualW, visualH, a);
+        if (scene.visual === "actions") drawActionsVisual(visualX, visualY, visualW, visualH, a);
+        if (scene.visual === "comparison") drawComparisonVisual(visualX, visualY, visualW, visualH, a);
+        if (scene.visual === "pipeline") drawPipelineVisual(visualX, visualY, visualW, visualH, a);
+        if (scene.visual === "engine") drawEngineVisual(visualX, visualY, visualW, visualH, a);
+        if (scene.visual === "decisions") drawDecisionsVisual(visualX, visualY, visualW, visualH, a);
+        if (scene.visual === "different") drawDifferentVisual(visualX, visualY, visualW, visualH, a);
+        if (scene.visual === "close") drawCloseVisual(visualX, visualY, visualW, visualH, a);
+
+        drawProgress(t / DURATION);
+      }
+
+      function drawBackground(t) {
+        const g = ctx.createLinearGradient(0, 0, W, H);
+        g.addColorStop(0, "#071013");
+        g.addColorStop(0.48, "#0a191d");
+        g.addColorStop(1, "#111827");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.globalAlpha = 0.11;
+        glow(220 + Math.sin(t / 2400) * 18, 120, 220, C.accent);
+        glow(1040 + Math.cos(t / 2600) * 20, 190, 260, C.blue);
+        ctx.globalAlpha = 1;
+      }
+
+      function drawChrome() {
+        round(54, 42, 54, 54, 9, "rgba(99,230,173,0.12)", "rgba(99,230,173,0.48)");
+        label("SZ", 81, 77, 22, C.accent, 900, "center");
+        label("ScopeZero", 126, 65, 24, C.ink, 900);
+        label("Action Authorization Gateway", 126, 91, 15, C.muted, 650);
+      }
+
+      function drawNarrative(scene, a) {
+        const x = 70 - (1 - a) * 14;
+        ctx.globalAlpha = Math.min(1, a * 1.5);
+        label(scene.tag, x, 176, 16, C.accent, 900);
+        fitWrapped(scene.title, x, 222, 560, 48, C.ink, 900, 50, 34, 3);
+        fitWrapped(scene.subtitle, x, 392, 540, 31, C.muted, 650, 22, 17, 3);
+        ctx.globalAlpha = 1;
+      }
+
+      function drawConsoleVisual(x, y, w, h, a) {
+        panel(x, y, w, h);
+        label("Live authorization queue", x + 28, y + 48, 18, C.ink, 850);
+        pill(x + w - 128, y + 26, 92, 30, "ENFORCING", C.accent);
+
+        const rows = [
+          ["github.pr", "Create patch PR", "allow", C.accent],
+          ["slack.post", "Send customer data", "block", C.danger],
+          ["aws.iam", "Attach admin policy", "approval", C.warn]
+        ];
+        rows.forEach((row, i) => {
+          const yy = y + 92 + i * 82;
+          round(x + 28, yy, w - 56, 60, 8, "rgba(239,250,247,0.045)", C.line);
+          label(row[0], x + 48, yy + 25, 16, C.blue, 800);
+          label(row[1], x + 48, yy + 46, 18, C.ink, 850);
+          pill(x + w - 152, yy + 16, 104, 28, row[2], row[3]);
+        });
+
+        fitWrapped("Pre-execution decisions before tools run", x + 48, y + h - 70, w - 96, 26, C.muted, 750, 19, 15, 2);
+      }
+
+      function drawActionsVisual(x, y, w, h, a) {
+        panel(x, y, w, h);
+        const actions = [
+          ["Open PR", C.accent, 56, 70],
+          ["Send Slack", C.blue, 278, 70],
+          ["Export data", C.danger, 56, 190],
+          ["Change IAM", C.warn, 278, 190]
+        ];
+        actions.forEach(([txt, color, dx, dy], i) => {
+          const visible = a > i * 0.12;
+          ctx.globalAlpha = visible ? 1 : 0.18;
+          round(x + dx, y + dy, 176, 78, 8, "rgba(239,250,247,0.045)", "rgba(190,238,229,0.16)");
+          label(txt, x + dx + 22, y + dy + 47, 21, color, 900);
+          ctx.globalAlpha = 1;
+        });
+        badge(x + 255, y + 336, 310, "REAL TOOL ACCESS", C.danger);
+      }
+
+      function drawComparisonVisual(x, y, w, h, a) {
+        panel(x, y, w, h);
+        round(x + 40, y + 78, 190, 210, 8, "rgba(107,184,255,0.07)", "rgba(107,184,255,0.42)");
+        label("IAM", x + 78, y + 138, 40, C.blue, 900);
+        fitWrapped("Can this identity access the system?", x + 78, y + 178, 116, 28, C.ink, 760, 20, 15, 3);
+
+        round(x + 280, y + 78, 190, 210, 8, "rgba(99,230,173,0.08)", "rgba(99,230,173,0.48)");
+        label("ScopeZero", x + 312, y + 138, 28, C.accent, 900);
+        fitWrapped("Should this exact action execute now?", x + 312, y + 178, 118, 28, C.ink, 760, 20, 15, 3);
+        arrow(x + 236, y + 183, x + 274, y + 183, C.muted);
+        badge(x + 255, y + 336, 360, "ACCESS IS NOT ACTION AUTHORIZATION", C.warn);
+      }
+
+      function drawPipelineVisual(x, y, w, h, a) {
+        panel(x, y, w, h);
+        const nodes = [
+          ["Agent service", "requests method", C.blue],
+          ["ScopeZero", "checks policy", C.accent],
+          ["Tool / API", "executes if safe", C.warn]
+        ];
+        nodes.forEach(([title, sub, color], i) => {
+          const xx = x + 40 + i * 155;
+          round(xx, y + 176, 124, 92, 8, "rgba(239,250,247,0.045)", color + "88");
+          label(title, xx + 62, y + 216, 17, color, 900, "center");
+          label(sub, xx + 62, y + 242, 13, C.muted, 700, "center");
+          if (i < 2) arrow(xx + 130, y + 222, xx + 150, y + 222, C.muted);
+        });
+        codeLine(x + 50, y + 72, "decision = scopezero.authorize(action)");
+        codeLine(x + 50, y + 112, "if decision.allow: execute()");
+        badge(x + 255, y + 338, 280, "BACKEND INTEGRATION", C.accent);
+      }
+
+      function drawEngineVisual(x, y, w, h, a) {
+        panel(x, y, w, h);
+        const checks = [
+          "Agent identity",
+          "Mission contract",
+          "Method and tool",
+          "Data class",
+          "Destination",
+          "Privilege impact",
+          "Prompt influence",
+          "Approval policy"
+        ];
+        checks.forEach((txt, i) => {
+          const col = i % 2;
+          const row = Math.floor(i / 2);
+          const xx = x + 38 + col * 225;
+          const yy = y + 52 + row * 70;
+          ctx.globalAlpha = a > i * 0.07 ? 1 : 0.2;
+          round(xx, yy, 200, 48, 8, "rgba(239,250,247,0.04)", C.line);
+          label("✓", xx + 24, yy + 31, 21, C.accent, 900, "center");
+          label(txt, xx + 48, yy + 31, 17, C.ink, 850);
+          ctx.globalAlpha = 1;
+        });
+        badge(x + 255, y + 352, 300, "DETERMINISTIC DECISION", C.blue);
+      }
+
+      function drawDecisionsVisual(x, y, w, h, a) {
+        panel(x, y, w, h);
+        const rows = [
+          ["ALLOW", "Safe pull request", C.accent],
+          ["BLOCK", "Restricted data egress", C.danger],
+          ["APPROVAL", "Admin cloud change", C.warn],
+          ["EVIDENCE", "Reason trail sealed", C.blue]
+        ];
+        rows.forEach(([status, desc, color], i) => {
+          const yy = y + 54 + i * 78;
+          round(x + 38, yy, w - 76, 56, 8, "rgba(239,250,247,0.045)", color + "77");
+          label(status, x + 62, yy + 35, 17, color, 900);
+          label(desc, x + 194, yy + 35, 19, C.ink, 850);
+        });
+      }
+
+      function drawDifferentVisual(x, y, w, h, a) {
+        panel(x, y, w, h);
+        const rows = [
+          ["IAM", "access"],
+          ["DLP", "data movement"],
+          ["SIEM", "after-the-fact visibility"],
+          ["ScopeZero", "pre-execution action control"]
+        ];
+        rows.forEach(([left, right], i) => {
+          const yy = y + 64 + i * 76;
+          const scope = left === "ScopeZero";
+          round(x + 40, yy, w - 80, 54, 8, scope ? "rgba(99,230,173,0.09)" : "rgba(239,250,247,0.04)", scope ? "rgba(99,230,173,0.5)" : C.line);
+          label(left, x + 64, yy + 34, 19, scope ? C.accent : C.ink, 900);
+          label(right, x + 214, yy + 34, 18, C.muted, 760);
+        });
+      }
+
+      function drawCloseVisual(x, y, w, h, a) {
+        panel(x, y, w, h);
+        round(x + 58, y + 76, w - 116, 216, 8, "rgba(99,230,173,0.09)", "rgba(99,230,173,0.48)");
+        label("Pilot ScopeZero", x + 100, y + 138, 25, C.accent, 900);
+        fitWrapped("One agent workflow. One tool surface. One unsafe action stopped before execution.", x + 100, y + 188, 300, 36, C.ink, 900, 29, 21, 3);
+        label("scopezero", x + 100, y + 336, 20, C.muted, 800);
+      }
+
+      function panel(x, y, w, h) {
+        round(x, y, w, h, 10, "rgba(13,29,34,0.84)", "rgba(190,238,229,0.17)");
+        round(x + 16, y + 16, w - 32, h - 32, 8, "rgba(239,250,247,0.025)", null);
+      }
+
+      function codeLine(x, y, line) {
+        round(x - 16, y - 24, 410, 34, 7, "rgba(4,12,14,0.55)", "rgba(190,238,229,0.12)");
+        label(line, x, y, 17, "#c8fff0", 700);
+      }
+
+      function badge(cx, cy, w, txt, color) {
+        round(cx - w / 2, cy - 23, w, 46, 999, color + "18", color + "88");
+        label(txt, cx, cy + 6, 15, color, 900, "center");
+      }
+
+      function pill(x, y, w, h, txt, color) {
+        round(x, y, w, h, 999, color + "16", color + "88");
+        label(txt.toUpperCase(), x + w / 2, y + h / 2 + 5, 12, color, 900, "center");
+      }
+
+      function drawProgress(progress) {
+        round(56, 654, 1168, 8, 999, "rgba(239,250,247,0.08)", null);
+        round(56, 654, 1168 * progress, 8, 999, C.accent, null);
+      }
+
+      function fitWrapped(value, x, y, maxWidth, lineHeight, color, weight, startSize, minSize, maxLines) {
+        let size = startSize;
+        let lines = [];
+        while (size >= minSize) {
+          lines = linesFor(value, maxWidth, weight, size);
+          if (lines.length <= maxLines) break;
+          size -= 2;
+        }
+        lines.slice(0, maxLines).forEach((line, i) => {
+          label(line, x, y + i * lineHeight, size, color, weight);
+        });
+      }
+
+      function linesFor(value, maxWidth, weight, size) {
+        ctx.font = `${weight} ${size}px Inter, system-ui, sans-serif`;
+        const words = String(value).split(" ");
+        const lines = [];
+        let line = "";
+        for (const word of words) {
+          const test = line ? `${line} ${word}` : word;
+          if (ctx.measureText(test).width > maxWidth && line) {
+            lines.push(line);
+            line = word;
+          } else {
+            line = test;
+          }
+        }
+        if (line) lines.push(line);
+        return lines;
+      }
+
+      function round(x, y, w, h, r, fill, stroke) {
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, r);
+        if (fill) {
+          ctx.fillStyle = fill;
+          ctx.fill();
+        }
+        if (stroke) {
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = 1.4;
+          ctx.stroke();
+        }
+      }
+
+      function glow(x, y, r, color) {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, color);
+        g.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = g;
+        ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      }
+
+      function arrow(x1, y1, x2, y2, color) {
+        line(x1, y1, x2, y2, color, 2.5);
+        ctx.beginPath();
+        ctx.moveTo(x2, y2);
+        ctx.lineTo(x2 - 8, y2 - 6);
+        ctx.lineTo(x2 - 8, y2 + 6);
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.fill();
+      }
+
+      function rotatingNodes(cx, cy, r, a) {
+        for (let i = 0; i < 7; i++) {
+          const angle = i / 7 * Math.PI * 2 + a * Math.PI * 2;
+          const x = cx + Math.cos(angle) * r;
+          const y = cy + Math.sin(angle) * r * 0.5;
+          line(cx, cy, x, y, "rgba(190,238,229,0.15)", 1.8);
+          circle(x, y, 8, i % 2 ? C.blue : C.accent);
+        }
+      }
+
+      function circle(x, y, r, color) {
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+      }
+
+      function line(x1, y1, x2, y2, color, width) {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.stroke();
+      }
+
+      function label(value, x, y, size, color, weight = 700, align = "left") {
+        ctx.fillStyle = color;
+        ctx.font = `${weight} ${size}px Inter, system-ui, sans-serif`;
+        ctx.textAlign = align;
+        ctx.textBaseline = "alphabetic";
+        ctx.fillText(String(value), x, y);
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function ease(t) {
+        return 1 - Math.pow(1 - t, 3);
+      }
+
+      async function recordToDownload() {
+        const blob = await recordVideo();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "scopezero-pitch-video.webm";
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+
+      async function recordToServer() {
+        try {
+          const blob = await recordVideo();
+          await fetch(`/upload?file=${encodeURIComponent(OUTPUT_FILE)}`, { method: "POST", body: blob });
+          statusEl.textContent = "Export complete. Video saved.";
+        } catch (error) {
+          statusEl.textContent = `Export failed: ${error.message}`;
+        }
+      }
+
+      async function recordVideo() {
+        return new Promise(async (resolve, reject) => {
+          if (recording) return reject(new Error("Already recording"));
+          recording = true;
+          statusEl.textContent = "Recording pitch video...";
+          const stream = canvas.captureStream(30);
+          let voiceover = null;
+          try {
+            voiceover = await createVoiceoverStream();
+            if (voiceover) {
+              stream.addTrack(voiceover.stream.getAudioTracks()[0]);
+            }
+          } catch (error) {
+            recording = false;
+            reject(error);
+            return;
+          }
+          const preferredMimeTypes = OUTPUT_FILE.toLowerCase().endsWith(".mp4")
+            ? [
+                "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+                "video/mp4;codecs=h264,aac",
+                "video/mp4"
+              ]
+            : [
+                "video/webm;codecs=vp9,opus",
+                "video/webm;codecs=vp9",
+                "video/webm"
+              ];
+          const mimeType = preferredMimeTypes.find((type) => MediaRecorder.isTypeSupported(type));
+          if (!mimeType) {
+            throw new Error(`This browser cannot export ${OUTPUT_FILE.endsWith(".mp4") ? "MP4" : "WebM"}.`);
+          }
+          const chunks = [];
+          const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 5_200_000 });
+          recorder.ondataavailable = (event) => {
+            if (event.data.size) chunks.push(event.data);
+          };
+          recorder.onerror = () => reject(recorder.error || new Error("MediaRecorder failed"));
+          recorder.onstop = () => {
+            recording = false;
+            if (voiceover) {
+              voiceover.audio.pause();
+              voiceover.audio.currentTime = 0;
+              voiceover.context.close();
+            }
+            statusEl.textContent = "Ready.";
+            resolve(new Blob(chunks, { type: mimeType }));
+          };
+          playStart = performance.now();
+          recorder.start();
+          if (voiceover) {
+            voiceover.audio.currentTime = 0;
+            voiceover.context.resume();
+            voiceover.audio.play();
+          }
+          setTimeout(() => recorder.stop(), DURATION + 250);
+        });
+      }
+
+      async function createVoiceoverStream() {
+        if (!VOICEOVER_SRC) return null;
+        const audio = new Audio(VOICEOVER_SRC);
+        audio.preload = "auto";
+        audio.crossOrigin = "anonymous";
+        audio.volume = 1;
+        await new Promise((resolve, reject) => {
+          audio.addEventListener("canplaythrough", resolve, { once: true });
+          audio.addEventListener("error", () => reject(new Error("Could not load voiceover audio.")), { once: true });
+          audio.load();
+        });
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const context = new AudioContext();
+        const source = context.createMediaElementSource(audio);
+        const destination = context.createMediaStreamDestination();
+        source.connect(destination);
+        return { audio, context, stream: destination.stream };
+      }
+    </script>
+  </body>
+</html>

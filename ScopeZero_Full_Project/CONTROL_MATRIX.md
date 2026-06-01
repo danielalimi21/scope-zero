@@ -1,0 +1,20 @@
+# ScopeZero Control Matrix
+
+This is an internal engineering control matrix. It maps each runtime control to the code path that actually enforces it. Keep it blunt: if a control is deterministic, fallback-only, or not yet production-grade, say so here.
+
+| Control | Code path | What it actually does | Current limitation |
+| --- | --- | --- | --- |
+| Mission capsule signature | `src/runtime.js`, `src/capsules.js` | Blocks tool calls when the mission capsule is missing, expired, or fails HMAC verification. | Uses shared-secret HMAC; enterprise KMS-backed signing is not yet mandatory. |
+| Tool allowlist | `src/policyEngine.js` | Escalates when a requested tool is outside the mission allowlist. | Tool identity still depends on the caller sending the correct tool id. |
+| Mission action contracts | `src/actionAuthorization.js`, `src/policyEngine.js` | Blocks tools, operations, data classes, and destinations outside the signed mission contract. | Contract quality depends on correctly authored missions. |
+| Tool manifest classification | `src/toolManifest.js`, `src/actionAuthorization.js`, `src/connectors.js` | Uses registered connector manifests as the authoritative operation/action type source before any regex fallback. | Unregistered tools still use fallback inference and should be treated as lower trust. |
+| Data boundary | `src/sensitiveData.js`, `src/policyEngine.js` | Classifies payloads deterministically and blocks when the class exceeds mission or policy boundaries. | Deterministic checks are shallow compared with enterprise DLP. |
+| Destination boundary | `src/sensitiveData.js`, `src/actionAuthorization.js`, `src/policyEngine.js` | Detects external destinations and enforces mission/policy destination allowlists. | Destination classification is rule-based. |
+| Prompt influence | `src/sensitiveData.js`, `src/policyEngine.js` | Scores configured patterns, paraphrased instruction override, bypass, exfiltration, concealment, simple leetspeak, and likely base64-encoded prompt influence. | Deterministic classifier, not an embedding-based or model-graded classifier yet. |
+| Server-side mission alignment | `src/missionAlignment.js`, `src/runtime.js`, `src/policyEngine.js` | Evaluates the requested operation, action text, destination, and signed mission objective on the server instead of trusting the agent's `mission_aligned` flag. | Deterministic lexical baseline; not yet embedding-based or model-graded. |
+| High-impact action approval | `src/policyEngine.js` | Escalates high-impact action types such as export, external send, privilege change, payment, and delegation. | Depends on action type quality; tool manifests now improve this for registered tools. |
+| Runtime risk budget | `src/policyEngine.js`, `src/runtime.js`, `src/store.js` | Accumulates session risk and escalates when a session would exceed its budget. | No behavioral baseline yet. |
+| Decision cache | `src/runtime.js` | Caches repeated equivalent decisions for a short TTL using mission, policy, tool, operation, data class, destination, privilege, money, and risk bucket. | In-memory per process; not a distributed cache or sidecar yet. |
+| Tenant isolation | `db/postgres/schema.sql`, `src/postgresStore.js` | Mirrors runtime state into tenant-scoped Postgres tables protected by row-level security using `scopezero.tenant_id`. | The canonical `scopezero_state` document remains a service-only maintenance table and must not be exposed to tenant roles. |
+| Evidence ledger | `src/ledger.js`, `src/runtime.js` | Appends hash-chained decision evidence for missions, approvals, and authorization decisions. | Local JSONL remains the primary demo ledger. |
+| Ledger external anchor | `src/ledgerAnchor.js`, `src/ledger.js` | Optionally writes signed chain roots to a separate file or external witness endpoint using `SCOPEZERO_LEDGER_ANCHOR_FILE` or `SCOPEZERO_LEDGER_ANCHOR_URL`. | Not a full S3 Object Lock integration yet unless the endpoint/file target is backed by immutable storage. |

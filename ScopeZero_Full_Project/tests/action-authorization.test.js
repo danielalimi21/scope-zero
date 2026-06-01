@@ -51,3 +51,38 @@ test("mission action contract rejects tools outside the signed contract", () => 
   assert.equal(result.ok, false);
   assert.equal(result.code, "tool-not-contracted");
 });
+
+test("registered tool manifest overrides misleading agent-supplied operation", () => {
+  const descriptor = describeActionRequest(
+    {
+      tool: "aws.iam.attachPolicy",
+      action: "List role metadata",
+      operation: "read",
+      payload: {
+        role_name: "prod-agent-role",
+        policy_name: "AdministratorAccess"
+      }
+    },
+    { label: "internal" }
+  );
+
+  assert.equal(descriptor.operation, "privilege_change");
+  assert.equal(descriptor.action_type, "privilege_change");
+  assert.equal(descriptor.operation_source, "tool_manifest");
+  assert.equal(descriptor.claimed_operation, "read");
+  assert.equal(descriptor.tool_manifest.irreversible, true);
+});
+
+test("unregistered tools fall back to inference and are marked as fallback", () => {
+  const descriptor = describeActionRequest(
+    {
+      tool: "custom.dispatch",
+      action: "Dispatch report to vendor"
+    },
+    { label: "confidential" }
+  );
+
+  assert.equal(descriptor.operation, "execute");
+  assert.equal(descriptor.operation_source, "fallback_inference");
+  assert.equal(descriptor.tool_manifest, null);
+});

@@ -1,29 +1,35 @@
 import { readFile } from "node:fs/promises";
 import { describeActionRequest } from "./actionAuthorization.js";
 import { createMissionCapsule, isExpired, verifyMissionCapsule } from "./capsules.js";
-import { createId, nowIso } from "./crypto.js";
+import { createId, nowIso, sha256, stableStringify } from "./crypto.js";
 import { evaluatePolicy } from "./policyEngine.js";
+import { evaluateMissionAlignment } from "./missionAlignment.js";
 import { classifyPayload, detectPromptInfluence, isExternalDestination } from "./sensitiveData.js";
 import { Ledger } from "./ledger.js";
+import { createLedgerAnchorFromEnv } from "./ledgerAnchor.js";
 import { PostgresStore } from "./postgresStore.js";
 import { Store } from "./store.js";
 
-export async function createRuntime({ rootDir, signingSecret }) {
+export async function createRuntime({ rootDir, signingSecret, toolManifestResolver = null }) {
   const defaultPolicy = JSON.parse(await readFile(new URL("../config/defaultPolicy.json", import.meta.url), "utf8"));
   const store = process.env.SCOPEZERO_STORE === "postgres"
     ? new PostgresStore({ connectionString: process.env.DATABASE_URL, defaultPolicy })
     : new Store(`${rootDir}/data/scopezero.db`, defaultPolicy);
-  const ledger = new Ledger(`${rootDir}/data/ledger.jsonl`);
+  const ledger = new Ledger(`${rootDir}/data/ledger.jsonl`, {
+    anchor: createLedgerAnchorFromEnv(process.env)
+  });
   await store.init();
   await ledger.init();
-  return new ScopeZeroRuntime({ store, ledger, signingSecret });
+  return new ScopeZeroRuntime({ store, ledger, signingSecret, toolManifestResolver });
 }
 
 export class ScopeZeroRuntime {
-  constructor({ store, ledger, signingSecret }) {
+  constructor({ store, ledger, signingSecret, toolManifestResolver = null }) {
     this.store = store;
     this.ledger = ledger;
     this.signingSecret = signingSecret;
+    this.toolManifestResolver = toolManifestResolver;
+    this.decisionCache = new Map();
   }
 
   async registerAgent(input) {
@@ -74,7 +80,15 @@ export class ScopeZeroRuntime {
     const classification = classifyPayload(input.payload || {});
     const promptInfluence = detectPromptInfluence(input.context || {}, policy);
     const externalDestination = isExternalDestination(input.destination || {}, policy);
-    const actionDescriptor = describeActionRequest(input, classification, policy);
+    const actionDescriptor = describeActionRequest(
+      input,
+      classification,
+      policy,
+      this.toolManifestResolver ? this.toolManifestResolver(input.tool) : null
+    );
+    const missionAlignment = mission
+      ? evaluateMissionAlignment({ mission, action: actionDescriptor, request: input })
+      : { aligned: false, score: 0, source: "server_deterministic", reasons: ["missing-mission"] };
     const authorization = {
       schema: actionDescriptor.schema,
       authorization_id: createId("authz", `${input.tenant_id}:${input.agent_id}:${input.mission_id}:${input.tool}:${input.action}:${Date.now()}`),
@@ -92,6 +106,16 @@ export class ScopeZeroRuntime {
 
     let capsuleValid = Boolean(mission && verifyMissionCapsule(mission, this.signingSecret) && !isExpired(mission));
     let verdict;
+    const cacheKey = decisionCacheKey({
+      input,
+      policy,
+      mission,
+      actionDescriptor,
+      classification,
+      externalDestination,
+      currentSessionRisk
+    });
+    const cached = capsuleValid ? this.readDecisionCache(cacheKey, policy) : null;
 
     if (!capsuleValid) {
       verdict = {
@@ -111,6 +135,19 @@ export class ScopeZeroRuntime {
         required_action: "deny_before_execution",
         safe_to_execute: false
       };
+    } else if (cached) {
+      verdict = {
+        ...cached.verdict,
+        reasons: cached.verdict.reasons.map((reason) => ({ ...reason })),
+        controls: [...cached.verdict.controls, "decision-cache-hit"],
+        action_descriptor: actionDescriptor,
+        cache: {
+          status: "hit",
+          key: cacheKey,
+          cached_at: cached.cached_at,
+          expires_at: cached.expires_at
+        }
+      };
     } else {
       verdict = evaluatePolicy({
         request: { ...input, action_descriptor: actionDescriptor },
@@ -119,9 +156,11 @@ export class ScopeZeroRuntime {
         policy,
         classification,
         promptInfluence,
+        missionAlignment,
         externalDestination,
         currentSessionRisk
       });
+      this.writeDecisionCache(cacheKey, verdict, policy);
     }
 
     const sessionRisk = await this.store.updateSessionRisk(sessionId, verdict.risk_contribution, input.tenant_id);
@@ -154,6 +193,7 @@ export class ScopeZeroRuntime {
       destination: input.destination || null,
       classification,
       prompt_influence: promptInfluence,
+      mission_alignment: missionAlignment,
       external_destination: externalDestination,
       verdict,
       approval_id: approval?.id || null
@@ -227,6 +267,70 @@ export class ScopeZeroRuntime {
   async verifyLedger() {
     return this.ledger.verify();
   }
+
+  readDecisionCache(key, policy) {
+    if (!policy.decision_cache_enabled || !key) {
+      return null;
+    }
+    const cached = this.decisionCache.get(key);
+    if (!cached) {
+      return null;
+    }
+    if (Date.now() > cached.expires_at_ms) {
+      this.decisionCache.delete(key);
+      return null;
+    }
+    return cached;
+  }
+
+  writeDecisionCache(key, verdict, policy) {
+    if (!policy.decision_cache_enabled || !key || verdict.cache?.status === "hit") {
+      return;
+    }
+    const ttlMs = Math.max(0, Number(policy.decision_cache_ttl_ms || 0));
+    if (!ttlMs) {
+      return;
+    }
+    const expiresAtMs = Date.now() + ttlMs;
+    this.decisionCache.set(key, {
+      verdict: {
+        ...verdict,
+        reasons: verdict.reasons.map((reason) => ({ ...reason })),
+        controls: [...verdict.controls]
+      },
+      cached_at: nowIso(),
+      expires_at: new Date(expiresAtMs).toISOString(),
+      expires_at_ms: expiresAtMs
+    });
+  }
+}
+
+function decisionCacheKey({ input, policy, mission, actionDescriptor, classification, externalDestination, currentSessionRisk }) {
+  if (!policy.decision_cache_enabled) {
+    return null;
+  }
+  if (!mission?.id || !actionDescriptor?.tool) {
+    return null;
+  }
+  const riskBudget = Number(policy.runtime_risk_budget || 0);
+  const riskBucket = riskBudget > 0 ? Math.floor(Number(currentSessionRisk || 0) / Math.max(1, Math.ceil(riskBudget / 4))) : 0;
+  return sha256(stableStringify({
+    tenant_id: input.tenant_id,
+    policy_hash: policy.policy_hash || `${policy.policy_id || "policy"}:${policy.policy_version || policy.version || "unknown"}`,
+    mission_id: mission.id,
+    tool: actionDescriptor.tool,
+    operation: actionDescriptor.operation,
+    action_type: actionDescriptor.action_type,
+    data_class: classification.label,
+    destination: {
+      address: actionDescriptor.destination?.address || "",
+      external: Boolean(externalDestination)
+    },
+    delegation_depth: Number(input.delegation_depth || 0),
+    money_amount: Number(input.money?.amount || 0),
+    privilege_admin: Boolean(input.privilege?.admin),
+    risk_bucket: riskBucket
+  }));
 }
 
 function withoutPolicyBody(proposal) {

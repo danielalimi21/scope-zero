@@ -3,9 +3,10 @@ import path from "node:path";
 import { createId, nowIso, sha256, stableStringify } from "./crypto.js";
 
 export class Ledger {
-  constructor(filePath) {
+  constructor(filePath, { anchor = null } = {}) {
     this.filePath = filePath;
     this.previousHash = "genesis";
+    this.anchor = anchor;
   }
 
   async init() {
@@ -28,6 +29,7 @@ export class Ledger {
     entry.hash = sha256(stableStringify(entry));
     this.previousHash = entry.hash;
     await fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`);
+    await this.anchor?.record(entry);
     return entry;
   }
 

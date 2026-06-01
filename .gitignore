@@ -19,6 +19,17 @@ ScopeZero_Full_Project/data/*.log
 # Local/generated archives
 *.zip
 
+# Generated pitch media and personal recordings
+Scope zero VoiceOver.m4a
+ScopeZero_Final_Pitch_Compressed.mp4
+ScopeZero_Pitch_Video/*.aiff
+ScopeZero_Pitch_Video/*.m4a
+ScopeZero_Pitch_Video/*.mp4
+ScopeZero_Pitch_Video/*.wav
+ScopeZero_Pitch_Video/*.webm
+ScopeZero_CISO_Buyer_Packet/pitch_video/*.mp4
+ScopeZero_CISO_Buyer_Packet/pitch_video/*.webm
+
 # Local-only transfer and early sharing notes
 ScopeZero_Full_Project/FRIEND_DEMO_README.md
 ScopeZero_Full_Project/MACBOOK_TRANSFER_README.md

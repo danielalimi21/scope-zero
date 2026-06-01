@@ -30,11 +30,12 @@ const STORE_PROVIDER = process.env.SCOPEZERO_STORE || "sqlite";
 const OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "";
 const SECRETS_PROVIDER = process.env.SCOPEZERO_SECRETS_PROVIDER || "local";
 
+const registry = new ConnectorRegistry();
 const runtime = await createRuntime({
   rootDir: __dirname,
-  signingSecret: SIGNING_SECRET
+  signingSecret: SIGNING_SECRET,
+  toolManifestResolver: (tool) => registry.getManifest(tool)
 });
-const registry = new ConnectorRegistry();
 const oauth = new OAuthBroker({ secret: AUTH_SECRET, redirectBaseUrl: PUBLIC_BASE_URL });
 const telemetry = new Telemetry({
   serviceName: process.env.OTEL_SERVICE_NAME || "scopezero-gateway",

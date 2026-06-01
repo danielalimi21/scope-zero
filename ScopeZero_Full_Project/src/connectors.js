@@ -1,27 +1,37 @@
+import { builtInToolManifestMap, normalizeToolManifest } from "./toolManifest.js";
+
 export class ConnectorRegistry {
   constructor({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
     this.connectors = new Map();
+    this.toolManifests = builtInToolManifestMap();
     this.env = env;
     this.fetchImpl = fetchImpl;
     this.registerDefaults();
   }
 
   register(connector) {
-    this.connectors.set(connector.name, connector);
+    const manifest = normalizeToolManifest(connector.manifest || this.toolManifests.get(connector.name) || { tool_id: connector.name });
+    this.toolManifests.set(connector.name, manifest);
+    this.connectors.set(connector.name, { ...connector, manifest });
   }
 
   list() {
-    return [...this.connectors.values()].map(({ name, description, inputSchema, vendor, mode }) => ({
+    return [...this.connectors.values()].map(({ name, description, inputSchema, vendor, mode, manifest }) => ({
       name,
       description,
       inputSchema,
       vendor,
-      mode
+      mode,
+      manifest
     }));
   }
 
   get(name) {
     return this.connectors.get(name);
+  }
+
+  getManifest(name) {
+    return this.toolManifests.get(name) || null;
   }
 
   async execute(name, args, context) {
@@ -63,6 +73,7 @@ export class ConnectorRegistry {
         description,
         vendor,
         mode,
+        manifest: this.toolManifests.get(name),
         inputSchema: toolSchema,
         async execute(args, context) {
           return {
@@ -99,6 +110,7 @@ function createAwsIamAttachPolicyConnector({ env }) {
     description: "Simulate an AWS IAM policy attachment request after ScopeZero authorization.",
     vendor: "AWS IAM",
     mode: mode === "live" ? "disabled-live-readonly-required" : "simulate",
+    manifest: builtInToolManifestMap().get("aws.iam.attachPolicy"),
     inputSchema: {
       type: "object",
       properties: {
@@ -158,6 +170,7 @@ function createSlackDraftConnector({ env, fetchImpl }) {
     description: "Post a governed Slack message to the configured demo channel.",
     vendor: "Slack",
     mode: configured ? "slack-api" : "local-adapter",
+    manifest: builtInToolManifestMap().get("slack.draft"),
     inputSchema: {
       type: "object",
       properties: {
@@ -261,6 +274,7 @@ function createGitHubPrConnector({ env, fetchImpl }) {
     description: "Create a governed GitHub draft pull request.",
     vendor: "GitHub",
     mode: configured ? "github-api" : "local-adapter",
+    manifest: builtInToolManifestMap().get("github.pr"),
     inputSchema: {
       type: "object",
       properties: {

@@ -7,6 +7,8 @@ test("github connector stays in local mode when credentials are absent", async (
   const github = registry.list().find((connector) => connector.name === "github.pr");
 
   assert.equal(github.mode, "local-adapter");
+  assert.equal(github.manifest.operation, "write");
+  assert.equal(github.manifest.mutating, true);
 
   const result = await registry.execute("github.pr", {
     tenant_id: "tenant_contoso",
@@ -19,6 +21,14 @@ test("github connector stays in local mode when credentials are absent", async (
 
   assert.equal(result.isError, false);
   assert.equal(result.structuredContent.configured, false);
+});
+
+test("connector registry exposes authoritative tool manifests", () => {
+  const registry = new ConnectorRegistry({ env: {}, fetchImpl: unreachableFetch });
+
+  assert.equal(registry.getManifest("gmail.send").operation, "external_send");
+  assert.equal(registry.getManifest("aws.iam.attachPolicy").action_type, "privilege_change");
+  assert.equal(registry.getManifest("aws.iam.attachPolicy").requires_approval_default, true);
 });
 
 test("github connector creates branch, file commit, and draft pull request", async () => {

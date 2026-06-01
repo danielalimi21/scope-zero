@@ -1,0 +1,54 @@
+ScopeZero voiceover script
+Target length: 56 seconds
+
+0:00-0:07 - ScopeZero
+ScopeZero is an action authorization gateway for AI agents.
+It sits between autonomous agents and the tools they use.
+
+0:07-0:14 - The Problem
+AI agents are becoming backend actors.
+They open pull requests, send messages, export data, call APIs, and change cloud permissions.
+
+0:14-0:21 - The Gap
+IAM can tell you the agent has access.
+ScopeZero decides whether this exact action should execute right now.
+
+0:21-0:29 - Where It Sits
+The customer's backend calls ScopeZero before the method runs.
+Only approved actions continue to GitHub, Slack, AWS, SaaS, APIs, or MCP tools.
+
+0:29-0:37 - How It Works
+ScopeZero checks the mission, method, data class, destination, prompt influence, privilege impact, risk, and approval policy.
+The decision is deterministic.
+
+0:37-0:45 - Decisions
+Safe work is allowed.
+Restricted data movement is blocked.
+Cloud admin changes require approval.
+Every decision leaves evidence for security teams.
+
+0:45-0:51 - Why It Matters
+This is not another chatbot guardrail.
+ScopeZero controls real agent actions before they create impact.
+
+0:51-0:56 - Pilot
+Start with one workflow.
+Prove one unsafe action is stopped before execution.
+
+Single-take version:
+
+ScopeZero is an action authorization gateway for AI agents. It sits between autonomous agents and the tools they use.
+
+AI agents are becoming backend actors. They open pull requests, send messages, export data, call APIs, and change cloud permissions.
+
+IAM can tell you the agent has access. ScopeZero decides whether this exact action should execute right now.
+
+The customer's backend calls ScopeZero before the method runs. Only approved actions continue to GitHub, Slack, AWS, SaaS, APIs, or MCP tools.
+
+ScopeZero checks the mission, method, data class, destination, prompt influence, privilege impact, risk, and approval policy. The decision is deterministic.
+
+Safe work is allowed. Restricted data movement is blocked. Cloud admin changes require approval. Every decision leaves evidence for security teams.
+
+This is not another chatbot guardrail. ScopeZero controls real agent actions before they create impact.
+
+Start with one workflow. Prove one unsafe action is stopped before execution.

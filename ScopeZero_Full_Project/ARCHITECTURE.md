@@ -291,7 +291,7 @@ Response:
 ## Tech Stack
 - **Runtime:** Node.js ES modules, `node --test` (no external test framework)
 - **Storage:** SQLite (`node:sqlite`, `DatabaseSync`) local; Postgres with RLS in production
-- **Crypto:** `node:crypto` — HMAC-SHA256 for signatures, SHA-256 for fingerprints and ledger chain
-- **Auth:** JWT (HS256/RS256), dev token endpoint, OIDC/JWKS support
-- **Tests:** 150 tests, 0 failures
+- **Crypto:** `node:crypto` — HMAC-SHA256 for signatures and the keyed ledger chain (constant-time comparison), SHA-256 for fingerprints
+- **Auth:** JWT (HS256 pinned / RS256 OIDC), dev token endpoint, OIDC/JWKS support
+- **Tests:** 190 tests, 0 failures
 - **No runtime dependencies** beyond Node.js builtins for the core gateway

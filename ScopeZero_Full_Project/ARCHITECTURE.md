@@ -109,15 +109,14 @@ Append-only JSONL file (`data/ledger.jsonl`). Every entry:
 Hash chain: each entry's `hash` covers its own body **plus** `previous_hash`. Tamper any entry and every subsequent hash breaks. When a secret is configured (`SCOPEZERO_LEDGER_SECRET`, else `SCOPEZERO_SIGNING_SECRET`) the chain hash is an **HMAC-SHA256** keyed by that secret — without the secret an attacker with write access to `ledger.jsonl` cannot recompute a valid chain after editing an entry, so a full rewrite is detected by `verify()` (plain SHA-256 fallback only when no secret is set). `GET /v1/ledger/verify` traverses the full chain and reports any break. Anchoring to an external witness endpoint is also supported (`src/ledgerAnchor.js`).
 
 ### 5. Store (`src/store.js`)
-SQLite via `node:sqlite` (`DatabaseSync`). State is a single JSON blob (`scopezero_state`) plus normalized relational tables (tenants, agents, missions, approvals, policies, policy_versions) for SQL querying. Postgres adapter available (`src/postgresStore.js`) with tenant row-level security.
+SQLite via `node:sqlite` (`DatabaseSync`). Core entities live in a JSON blob (`scopezero_state`) mirrored to normalized relational tables (tenants, agents, missions, approvals, policies, policy_versions) for SQL querying — the mirror is rebuilt per-table only when that collection changed (dirty-tracking), not on every write. The **hot-path** collections — `behavior_profiles`, `sessions`, `metrics` — written on every tool call, live in their **own row-keyed tables** with atomic upserts, *not* in the blob, so a tool call never reserializes all state (and, in Postgres, never takes the global write lock). Postgres adapter available (`src/postgresStore.js`) with tenant row-level security on every tenant table including the hot-path ones.
 
-State namespaces:
-- `tenants`, `agents`, `missions`, `approvals` — core entities
-- `policies` — per-tenant policy objects
-- `sessions` — risk budget tracking per `tenant:session`
-- `behavior_profiles` — per `tenant:agent` behavioral baseline
-- `mcp_servers` — MCP trust registry
-- `agent_certs` — issued identity certificates
+State / tables:
+- `tenants`, `agents`, `missions`, `approvals`, `policies`, `policy_versions` — core entities (blob + mirror tables)
+- `behavior_profiles` (table) — per `tenant:agent` behavioral baseline, per-row upsert
+- `sessions` (table) — risk budget per `tenant:session`, atomic increment capped at 100
+- `metrics` (table) — global decision counters, atomic increment
+- `mcp_servers`, `agent_certs` — MCP trust registry, issued identity certificates
 
 ---
 

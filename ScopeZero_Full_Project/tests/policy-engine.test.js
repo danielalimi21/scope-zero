@@ -98,7 +98,7 @@ test("policy blocks restricted external egress outside mission", () => {
   assert.ok(verdict.reasons.some((reason) => reason.code === "sensitive-egress"));
 });
 
-test("policy blocks server-side mission drift even when agent claims alignment", () => {
+test("lexical mission drift escalates to human approval (advisory), never blocks on its own", () => {
   const driftMission = {
     ...mission,
     allowed_tools: ["slack.draft"],
@@ -142,6 +142,114 @@ test("policy blocks server-side mission drift even when agent claims alignment",
     currentSessionRisk: 0
   });
 
-  assert.equal(verdict.decision, "block");
-  assert.ok(verdict.reasons.some((reason) => reason.code === "intent-drift"));
+  // A keyword-overlap heuristic must not block by itself; it routes to a human.
+  // The deterministic contract gates are what block.
+  assert.equal(verdict.decision, "approval");
+  assert.equal(verdict.safe_to_execute, false);
+  assert.ok(verdict.reasons.some((reason) => reason.code === "intent-drift-advisory"));
+});
+
+// The exfil-to-an-allowed-host case: every contract gate is satisfied (the tool,
+// operation, data class, and destination are all in scope) and the keyword
+// classifier sees nothing sensitive — yet the content is leaving for an external
+// host. A blind "public" must not be an automatic allow. This is the control that
+// closes the hole the host-only proxy cannot see.
+test("unknown-class content leaving for an in-contract external host is held for review, not auto-allowed", () => {
+  const egressMission = {
+    id: "mission_egress",
+    status: "active",
+    allowed_tools: ["github.write"],
+    allowed_data_classes: ["public", "internal"],
+    allowed_destinations: ["api.github.com"],
+    action_contracts: [
+      {
+        id: "gh-write",
+        tools: ["github.write"],
+        operations: ["write"],
+        data_classes: ["public", "internal"],
+        destinations: ["api.github.com"],
+        effect: "allow"
+      }
+    ]
+  };
+  const request = {
+    tool: "github.write",
+    action: "Create a gist with the export",
+    operation: "write",
+    payload: { content: "id,amount\n1,4193\n2,5521\n3,8840" }, // sensitive rows, no trigger keyword
+    action_descriptor: {
+      schema: "scopezero.action_authorization.v1",
+      tool: "github.write",
+      action: "Create a gist with the export",
+      operation: "write",
+      action_type: "write",
+      data_class: "public",
+      data_rank: 1,
+      destination: { type: "url", address: "api.github.com", external: true },
+      // Manifest present (so the mutating-manifest gate is satisfied) but it does
+      // not declare an output class — so the egress class is genuinely unknown.
+      tool_manifest: { tool_id: "github.write", operation: "write", action_type: "write", data_out_classes: [] }
+    }
+  };
+
+  const verdict = evaluatePolicy({
+    request,
+    mission: egressMission,
+    agent: { ...agent, allowed_tools: ["github.write"] },
+    policy,
+    classification: { level: 1, label: "public", findings: [] },
+    promptInfluence: { influenced: false, origin: "unknown", matched_patterns: [] },
+    missionAlignment: { aligned: true, score: 0.5, source: "server_deterministic", reasons: [] },
+    externalDestination: true,
+    currentSessionRisk: 0
+  });
+
+  assert.equal(verdict.decision, "approval");
+  assert.equal(verdict.safe_to_execute, false);
+  assert.ok(verdict.reasons.some((reason) => reason.code === "unverified-egress-class"));
+});
+
+// Read-only inferred operations stay autonomous — the fail-closed-on-unknown rule
+// must not turn every external read into an approval.
+test("an in-contract external read with no payload stays an automatic allow", () => {
+  const readMission = {
+    id: "mission_read",
+    status: "active",
+    allowed_tools: ["api.fetch"],
+    allowed_data_classes: ["public", "internal"],
+    allowed_destinations: ["api.github.com"],
+    action_contracts: [
+      { id: "fetch", tools: ["api.fetch"], operations: ["read"], data_classes: ["public", "internal"], destinations: ["api.github.com"], effect: "allow" }
+    ]
+  };
+  const request = {
+    tool: "api.fetch",
+    action: "Read issue list",
+    operation: "read",
+    action_descriptor: {
+      schema: "scopezero.action_authorization.v1",
+      tool: "api.fetch",
+      action: "Read issue list",
+      operation: "read",
+      action_type: "read",
+      data_class: "public",
+      data_rank: 1,
+      destination: { type: "url", address: "api.github.com", external: true },
+      tool_manifest: { tool_id: "api.fetch", operation: "read", action_type: "read", data_out_classes: ["public"] }
+    }
+  };
+
+  const verdict = evaluatePolicy({
+    request,
+    mission: readMission,
+    agent: { ...agent, allowed_tools: ["api.fetch"] },
+    policy,
+    classification: { level: 1, label: "public", findings: [] },
+    promptInfluence: { influenced: false, origin: "unknown", matched_patterns: [] },
+    missionAlignment: { aligned: true, score: 0.5, source: "server_deterministic", reasons: [] },
+    externalDestination: true,
+    currentSessionRisk: 0
+  });
+
+  assert.equal(verdict.decision, "allow");
 });

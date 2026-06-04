@@ -21,24 +21,25 @@ ScopeZero issues a **signed mission capsule** before an agent runs: *this agent,
 
 ## Why an incumbent can't just ship this
 
-A service mesh enforces *network identity*; it has no concept of a *signed, human-delegated, time-boxed agent mission*. A prompt-firewall enforces *content*; it's bypassed the moment the agent opens its own socket. ScopeZero is the only layer that ties **kernel-enforced egress** to a **cryptographic mission contract** with a **court-admissible audit trail** — the intersection is the moat, and it's the exact shape of what a CISO has to certify for SOC 2 / EU AI Act / HIPAA.
+A service mesh enforces *network identity*; it has no concept of a *signed, human-delegated, time-boxed agent mission*. A prompt-firewall enforces *content*; it's bypassed the moment the agent opens its own socket. ScopeZero is the only layer that ties **kernel-enforced egress** to a **cryptographic mission contract** with a **tamper-evident, externally anchorable audit trail** — the intersection is the moat, and it's the exact shape of what a CISO has to certify for SOC 2 / EU AI Act / HIPAA.
 
 ## The proof — run it in 10 seconds
 
 ```
-npm test            # 187 tests, 0 failures
+npm test            # 192 tests, 0 failures
 npm run demo:breach # injected agent vs. a signed mission
+npm run demo:exfil  # exfil to an ALLOWED host, caught at the action layer
 npm run bench       # persistence hot-path throughput
 ```
 
-`demo:breach` walks an injected diligence agent through every escape and shows containment, then verifies the ledger: SDK exfil → blocked; raw tunnel to pastebin → blocked; **expired-mission replay → blocked**; **forged capsule → blocked**; ledger verifies clean. Exit code is non-zero if any containment fails — so the guarantee is executable, not a slide.
+`demo:breach` walks an injected diligence agent through every escape and shows containment, then verifies the ledger: SDK exfil → blocked; raw tunnel to pastebin → blocked; **expired-mission replay → blocked**; **forged capsule → blocked**; ledger verifies clean. `demo:exfil` covers the hard case the network layer *can't* see: data leaving for a host that is in contract (`api.github.com`) — caught at the action layer because the payload's class can't be established, while the host-only proxy allows the same CONNECT. Exit code is non-zero if any containment fails — so the guarantee is executable, not a slide.
 
 ## Architecture in five lines
 
 - **Mission capsule** (`src/capsules.js`) — HMAC-signed, TTL-bounded authorization token; vendor-neutral action contracts `(tool, operation, data_class, destination)`.
 - **Enforcement** — Layer 1 pre-exec gateway (SDK, action-level; fail-closed on block/approval *and* on gateway error, redact enforced via a redactor), Layer 2 HTTPS `CONNECT` proxy (mission-bound, destination-level), Layer 3 kernel egress block (K8s NetworkPolicy *or* Docker internal network, fail-closed).
 - **Ledger** (`src/ledger.js`) — append-only, HMAC-keyed hash chain, optional external anchoring.
-- **Defense-in-depth** — server-side data classification, evasion-resistant prompt-injection detection (homoglyph fold, letter-spacing/punctuation collapse, base64 — 100% recall / 0 false-positives on the adversarial corpus in `tests/prompt-injection-corpus.test.js`), a deterministic intent-drift screen (keyword-overlap heuristic — a fast first-pass signal, not semantic "understanding"), behavioral anomaly detection (incl. baseline-independent low-and-slow ceiling), MCP trust registry with scheduled CVE refresh, agent identity certs.
+- **Advisory signals (not the guarantee)** — these raise risk and route to human approval; they never stand alone as the block, because the deterministic contract gates do that. Server-side data classification (keyword-based — and egress of content it *can't* positively class is held for review rather than trusted as public); an obfuscation-normalizing prompt-influence heuristic (homoglyph fold, letter-spacing/punctuation collapse, base64 — strong on the adversarial corpus in `tests/prompt-injection-corpus.test.js`, but a denylist by nature, so we treat it as a signal); a keyword-overlap intent-drift screen (not semantic "understanding"); behavioral anomaly detection; MCP trust registry; agent identity certs.
 - **Multi-tenant** — Postgres with row-level security (every tenant table, incl. hot-path); hot-path state (behavior, session risk, metrics) on per-row atomic upserts so the gateway scales past single-writer throughput. `npm run bench`: ~31k hot-path writes/sec with **0 full-state-blob rewrites** on the persistence layer.
 
 ## Honest scope (what's enforcement vs. governance)

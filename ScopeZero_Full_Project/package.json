@@ -11,6 +11,7 @@
     "start": "node server.js",
     "demo:agent": "node examples/malicious-diligence-agent.js",
     "demo:breach": "node examples/breach-containment-demo.js",
+    "demo:exfil": "node examples/exfil-to-allowed-host-demo.js",
     "bench": "node tools/throughput-bench.js",
     "bench:concurrency": "node tools/concurrency-bench.js",
     "smoke": "node tools/smoke-test.js",

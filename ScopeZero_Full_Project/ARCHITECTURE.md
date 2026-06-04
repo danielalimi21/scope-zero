@@ -60,18 +60,25 @@ Capsules are **HMAC-SHA256 signed** (`SCOPEZERO_SIGNING_SECRET`). The runtime ve
 ### 2. Policy Engine (`src/policyEngine.js`)
 Pure function: `evaluatePolicy(request, mission, agent, policy, ...) → verdict`
 
-Evaluation pipeline (in order):
-1. Capsule validity (signature + expiry)
-2. Session risk budget exceeded
-3. Prompt injection detected (`src/sensitiveData.js`)
-4. Sensitive data classification (`classifyPayload`)
-5. Intent-drift screen — keyword-overlap heuristic, not semantic understanding (`src/missionAlignment.js`)
-6. Action contract match (`src/actionAuthorization.js`)
-7. External destination check
-8. Data class rank vs contract ceiling
-9. Delegation depth limit
+Two tiers of rule. **Deterministic gates block** (sound controls): capsule
+validity, action-contract match `(tool, operation, data class, destination)`,
+sensitive-egress, blocked action types, delegation depth. **Advisory signals
+escalate** to human approval, never block on their own: keyword-overlap
+intent-drift (`src/missionAlignment.js`), the prompt-influence heuristic
+(`src/sensitiveData.js`). A blunt heuristic must not be sold as a guarantee, so
+it routes to a human instead of silently deciding.
 
-First rule that fires wins. Output: `{ decision, risk_score, risk_contribution, reasons[], controls[], matched_contract_id, safe_to_execute }`.
+Notable controls:
+- **Fail-closed on unknown egress** — outbound content whose data class can't be
+  positively established (keyword classifier found nothing, no tool manifest
+  declares the output class) is held for human review rather than trusted as
+  public. This is the control that catches exfiltration to an *in-contract* host,
+  which the host-only proxy cannot see.
+- **Manifest-or-escalate** — any mutating/high-impact operation with no
+  authoritative tool manifest is escalated, because the operation is otherwise
+  whatever the agent declared it to be.
+
+Decisions compose (the strongest verdict wins), not first-rule-wins. Output: `{ decision, risk_score, risk_contribution, reasons[], controls[], matched_contract_id, safe_to_execute }`.
 
 ### 3. `evaluateToolCall` — the hot path (`src/runtime.js:~160`)
 Full evaluation sequence per call:
@@ -293,5 +300,5 @@ Response:
 - **Storage:** SQLite (`node:sqlite`, `DatabaseSync`) local; Postgres with RLS in production
 - **Crypto:** `node:crypto` — HMAC-SHA256 for signatures and the keyed ledger chain (constant-time comparison), SHA-256 for fingerprints
 - **Auth:** JWT (HS256 pinned / RS256 OIDC), dev token endpoint, OIDC/JWKS support
-- **Tests:** 190 tests, 0 failures
+- **Tests:** 192 tests, 0 failures
 - **No runtime dependencies** beyond Node.js builtins for the core gateway

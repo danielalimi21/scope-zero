@@ -136,7 +136,7 @@ async function main() {
   step("7. Prove it — the tamper-evident ledger");
   const verify = await runtime.verifyLedger();
   contained(
-    "hash-chained ledger verifies clean (court-admissible audit trail)",
+    "hash-chained ledger verifies clean (tamper-evident audit trail)",
     verify.valid === true,
     `${verify.entries} entries, chain_root ${String(verify.chain_root).slice(0, 24)}…`
   );

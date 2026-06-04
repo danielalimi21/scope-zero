@@ -61,12 +61,17 @@ export function evaluatePolicy({ request, mission, agent, policy, classification
     decision = "block";
   }
 
+  // Lexical mission-alignment is an ADVISORY heuristic (keyword overlap), not a
+  // sound control: it can be gamed by padding the action with objective terms and
+  // it can false-positive. A drift signal therefore routes to a human approver —
+  // it never silently blocks on its own. The deterministic contract gates above
+  // (tool / operation / data-class / destination) are what actually block.
   if (policy.mission_lock && missionAlignment?.aligned === false) {
-    addRisk(42, "intent-drift", `Server-side mission alignment failed: ${missionAlignment.reasons.join(", ")}.`);
-    decision = "block";
+    addRisk(20, "intent-drift-advisory", `Lexical mission-alignment flagged possible drift (advisory): ${missionAlignment.reasons.join(", ")}.`);
+    decision = stronger(decision, "approval");
   } else if (policy.mission_lock && !missionAlignment && request.context?.mission_aligned === false) {
-    addRisk(42, "intent-drift-self-reported", "Agent self-reported mission drift and no server-side alignment result was available.");
-    decision = "block";
+    addRisk(20, "intent-drift-self-reported", "Agent self-reported mission drift (advisory); routing to human approver.");
+    decision = stronger(decision, "approval");
   }
 
   if (policy.prompt_injection_shield && promptInfluence.influenced) {
@@ -79,6 +84,25 @@ export function evaluatePolicy({ request, mission, agent, policy, classification
   if (policy.sensitive_egress_guard && externalDestination && classification.level >= policy.sensitive_data_block_level) {
     addRisk(44, "sensitive-egress", "Sensitive data attempted to cross an external boundary.");
     decision = "block";
+  }
+
+  // Fail closed on UNKNOWN egress. The keyword classifier is blind to sensitive
+  // content that carries no trigger term (raw tables, source code, opaque dumps),
+  // so a "public" verdict on outbound content is an absence of evidence, not
+  // evidence of absence. When content with no positively established data class
+  // crosses an external boundary and no tool manifest declares the tool's output
+  // class, route to a human instead of trusting it as public. This is the control
+  // that closes exfiltration to an in-contract host.
+  if (
+    policy.unknown_egress_requires_approval &&
+    externalDestination &&
+    classification.level <= 1 &&
+    !(action?.tool_manifest?.data_out_classes?.length) &&
+    hasMeaningfulPayload(request) &&
+    decision === "allow"
+  ) {
+    addRisk(16, "unverified-egress-class", "Outbound content has no positively established data class (keyword classifier found nothing, no tool manifest declares the output class). Routing to human review rather than trusting it as public.");
+    decision = "approval";
   }
 
   if (Number(request.delegation_depth || 0) > Number(policy.max_delegation_depth || 0)) {
@@ -108,6 +132,22 @@ export function evaluatePolicy({ request, mission, agent, policy, classification
     decision !== "block"
   ) {
     addRisk(20, "unmanifested-high-impact", `No authoritative manifest for ${action.tool}; high-impact action is inferred from self-declared input.`);
+    decision = stronger(decision, "approval");
+  }
+
+  // Same principle, widened to any MUTATING operation (write/create/update/delete/
+  // deploy). Without an authoritative manifest the operation is whatever the agent
+  // said it was, so a state-changing call on the agent's own word escalates rather
+  // than executing silently. Read-only inferred operations stay autonomous.
+  if (
+    policy.require_manifest_for_mutating &&
+    action &&
+    !action.tool_manifest &&
+    (policy.mutating_operations || []).includes(action.operation) &&
+    !(policy.high_impact_action_types || []).includes(action.action_type) &&
+    decision !== "block"
+  ) {
+    addRisk(14, "unmanifested-mutation", `No authoritative manifest for ${action.tool}; mutating operation "${action.operation}" is inferred from self-declared input.`);
     decision = stronger(decision, "approval");
   }
 
@@ -153,6 +193,32 @@ export function evaluatePolicy({ request, mission, agent, policy, classification
     controls.push(code);
     reasons.push({ code, message });
   }
+}
+
+// Does the request carry outbound content worth classifying? Used so the
+// unknown-egress control fires on real payloads, not on empty/metadata-only calls.
+function hasMeaningfulPayload(request) {
+  const payload = request?.payload;
+  if (!payload) {
+    return false;
+  }
+  if (typeof payload === "string") {
+    return payload.trim().length > 0;
+  }
+  const contentFields = ["text", "summary", "title", "query", "body", "content", "data", "file", "rows", "records", "attachments"];
+  return contentFields.some((field) => {
+    const value = payload[field];
+    if (value == null) {
+      return false;
+    }
+    if (typeof value === "string") {
+      return value.trim().length > 0;
+    }
+    if (Array.isArray(value)) {
+      return value.length > 0;
+    }
+    return true;
+  });
 }
 
 function stronger(current, candidate) {

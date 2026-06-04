@@ -1,10 +1,12 @@
 # ScopeZero
 
-**ScopeZero is a vendor-neutral action authorization gateway for autonomous AI-agent tool calls.**
+**ScopeZero authorizes every AI-agent action against a signed, human-delegated mission before it runs — and keeps a tamper-evident record of every decision, so you can prove what your agents did and that it was authorized.**
 
 It sits between AI agents and the tools they use. Before an agent sends email, exports data, opens a ticket, touches cloud permissions, calls an MCP tool, or moves information across a boundary, ScopeZero asks one question:
 
 > Is this specific action authorized by the agent's approved mission?
+
+…and writes the answer to a hash-chained ledger that can't be quietly rewritten. The record is the system of record for agent behavior; the live authorization gate is what populates it. You get both: a provable audit trail *and* fail-closed prevention.
 
 The core line is simple:
 
@@ -25,31 +27,35 @@ ScopeZero is the missing runtime control: **pre-execution authorization for ever
 
 ## What Is Implemented
 
-This repository contains a runnable product core:
+This repository contains a runnable product. The **core** is the spine of the
+product — authorize each action, contain it, record it. Everything under
+**Experimental / demo surface** is real and tested but secondary; it exists to
+demonstrate breadth and is not what the product leads with.
+
+**Core**
 
 - Live Node.js gateway on `http://localhost:8788`.
-- Browser command center and attack simulation.
-- Agent SDK.
-- End-to-end malicious diligence agent example.
 - Mission action contracts signed into short-lived capsules.
 - Pre-execution action authorization API.
-- Runtime policy engine with allow, block, redact, quarantine, approval, and pause decisions.
-- Sensitive data classifier and prompt-influence detector.
+- Runtime policy engine with allow, block, redact, quarantine, approval, and pause decisions — the deterministic contract gates (tool / operation / data class / destination) are the controls that actually block.
+- Fail-closed-on-unknown egress: outbound content whose data class can't be positively established is held for human review, not trusted as public — this is what catches exfiltration to an in-contract host (`npm run demo:exfil`).
+- Hash-chained, HMAC-keyed evidence ledger with verification tooling and optional external anchoring.
+- Agent SDK (authorize-then-execute, fail-closed on block/approval and on gateway error).
+- HTTPS `CONNECT` egress proxy + kernel lockdown (K8s NetworkPolicy or Docker internal network) — destination-level containment an injected agent can't route around.
 - Human approval broker.
-- Hash-chained evidence ledger with verification tooling.
+- Advisory signals (raise risk / route to approval, never block alone): keyword data classifier, an obfuscation-normalizing prompt-influence heuristic, a keyword-overlap intent-drift screen.
+
+**Experimental / demo surface**
+
+- Browser command center and attack simulation; end-to-end malicious diligence agent example.
 - SIEM exports for JSON, CEF, LEEF, and OTLP-style logs.
-- MCP JSON-RPC proxy for guarded `tools/call`.
-- Connector registry for SaaS, cloud, and enterprise-tool boundaries.
-- Live GitHub draft pull request connector with safe local fallback.
-- Live Slack demo-channel connector with safe local fallback.
-- AWS IAM safe simulation connector for cloud privilege-change demos.
-- OIDC/JWKS validation path, local signed bearer tokens, RBAC, API key support, and tenant filtering.
-- Optional managed Postgres store for production-style multi-replica state.
-- Encrypted local secret references for connector credentials.
-- Policy proposal, approval, and version history APIs.
-- OpenTelemetry trace capture and optional OTLP export.
-- Prometheus metrics endpoint.
-- Docker and Kubernetes deployment scaffolding.
+- MCP JSON-RPC proxy for guarded `tools/call`; MCP trust registry with OSV CVE refresh.
+- Connector registry; live GitHub draft-PR and Slack demo-channel connectors with safe local fallback; AWS IAM safe simulation.
+- Agent identity certificates; behavioral anomaly detection.
+- OIDC/JWKS validation, local signed bearer tokens, RBAC, API keys, tenant filtering.
+- Optional managed Postgres store with row-level security for multi-replica state.
+- Encrypted local secret references; policy proposal/approval/version APIs.
+- OpenTelemetry traces, Prometheus metrics, Docker/Kubernetes scaffolding.
 - SOC2-oriented control map and security review.
 
 ## Run Locally

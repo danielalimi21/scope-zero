@@ -1,15 +1,18 @@
 # ScopeZero — one-pager
 
-## The gate that contains a prompt-injected agent
+## The system of record for what your AI agents do — that also stops the bad ones
 
 **Your AI agents have real credentials. One prompt injection turns "summarize
 these docs" into "email the customer data to attacker@gmail.com." Today, nothing
-structurally stops it — and you can't prove to an auditor what your agent did.**
+structurally stops it — and you can't prove to an auditor what your agent did, or
+that it was authorized.**
 
-ScopeZero is a pre-execution authorization gateway for AI agents. Before an
-agent calls GitHub, Slack, Gmail, AWS, or any MCP server, ScopeZero checks a
-**signed, time-boxed mission** and returns allow / block / redact / approval /
-quarantine. Every decision is sealed in a **tamper-evident ledger**.
+ScopeZero authorizes every agent action against a **signed, time-boxed mission**
+before it runs, and writes the decision to a **tamper-evident ledger**. You get
+both: a provable record of every action your agents took *and* fail-closed
+prevention. Before an agent calls GitHub, Slack, Gmail, AWS, or any MCP server,
+ScopeZero returns allow / block / redact / approval / quarantine — and seals the
+answer in a hash-chained log that can't be quietly rewritten.
 
 ## How it's different
 
@@ -24,21 +27,25 @@ quarantine. Every decision is sealed in a **tamper-evident ledger**.
 
 | | |
 |---|---|
-| **Least-privilege agents** | Signed mission capsule: these tools, this data, these destinations, until this time. |
+| **Provable record** | Every decision sealed in a hash-chained, HMAC-keyed ledger — tamper-evident and externally anchorable. Answer "what did our agents do, and was it authorized?" with evidence. |
+| **Least-privilege agents** | Ed25519-signed mission capsule: these tools, this data, these destinations, until this time. Private key signs; verifiers hold only the public key, so a leaked key can't forge a mission. |
 | **Fail-closed egress** | Kernel-enforced — K8s NetworkPolicy *or* Docker internal network. A raw socket can't skip it. |
-| **Tamper-evident audit** | HMAC-keyed hash-chained ledger. Court-admissible "here's exactly what the agent did." |
-| **Evasion-resistant detection** | Prompt-injection shield (homoglyph/spacing/base64), behavioral anomaly detection. |
+| **Catches exfil to allowed hosts** | Outbound content whose data class can't be established is held for review, not trusted as public — the leak the host-only proxy can't see. |
 | **Compliance-ready** | Maps to OWASP LLM Top 10, MITRE ATLAS, SOC 2, EU AI Act, HIPAA. |
 
 ## Proof, not slides
 
 ```
 npm run demo:breach   # injected agent vs a signed mission — every escape contained, ledger verified
+npm run demo:exfil    # data leaving for an ALLOWED host — caught at the action layer
 ```
 
 90 seconds. An agent gets injected and tries to exfiltrate via the SDK, via a
 raw tunnel, via a replayed expired mission, and via a forged capsule. All
-contained. The ledger verifies clean.
+contained, ledger verifies clean. `demo:exfil` covers the hard case: data leaving
+for a host that *is* in contract (`api.github.com`) — caught where the bytes are
+visible, while the host-only proxy allows the same connection. Exit code is
+non-zero if any step fails, so the guarantee is executable, not a slide.
 
 ## Where it fits
 

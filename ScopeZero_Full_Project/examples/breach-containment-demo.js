@@ -95,7 +95,7 @@ async function main() {
     mission: runtime.store.getMission(capsule.id, TENANT),
     host: "pastebin.com",
     requestedAgentId: AGENT,
-    signingSecret: SECRET
+    verifyKey: SECRET
   });
   contained(
     "proxy refused egress to a host outside the mission contract",
@@ -109,7 +109,7 @@ async function main() {
     mission: runtime.store.getMission(capsule.id, TENANT),
     host: "diligence-room.contoso.example",
     requestedAgentId: AGENT,
-    signingSecret: SECRET,
+    verifyKey: SECRET,
     now: new Date(new Date(capsule.expires_at).getTime() + 60_000)
   });
   contained(
@@ -124,7 +124,7 @@ async function main() {
     mission: { ...runtime.store.getMission(capsule.id, TENANT), allowed_destinations: ["*"], action_contracts: [{ tools: ["*"], destinations: ["*"] }] },
     host: "pastebin.com",
     requestedAgentId: AGENT,
-    signingSecret: SECRET
+    verifyKey: SECRET
   });
   contained(
     "proxy refused a forged capsule — signature verification failed",

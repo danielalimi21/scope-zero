@@ -1,7 +1,7 @@
-import { createId, hmacSha256, nowIso, stableStringify, timingSafeEqualStr } from "./crypto.js";
+import { createId, ed25519Sign, ed25519Verify, nowIso, stableStringify } from "./crypto.js";
 import { buildDefaultActionContracts } from "./actionAuthorization.js";
 
-export function createMissionCapsule(input, signingSecret) {
+export function createMissionCapsule(input, signingKey) {
   const issuedAt = nowIso();
   const ttlMinutes = Number(input.ttl_minutes || 45);
   const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
@@ -29,25 +29,32 @@ export function createMissionCapsule(input, signingSecret) {
     status: "active"
   };
 
-  return signCapsule(capsule, signingSecret);
+  return signCapsule(capsule, signingKey);
 }
 
-export function signCapsule(capsule, signingSecret) {
+// sz2 = Ed25519 signature over the canonical (key-sorted) unsigned capsule.
+// signingKey may be a private KeyObject or a shared-secret string (derived).
+export function signCapsule(capsule, signingKey) {
   const unsigned = { ...capsule };
   delete unsigned.signature;
   return {
     ...unsigned,
-    signature: `sz1.${hmacSha256(signingSecret, stableStringify(unsigned))}`
+    signature: `sz2.${ed25519Sign(signingKey, stableStringify(unsigned))}`
   };
 }
 
-export function verifyMissionCapsule(capsule, signingSecret) {
-  if (!capsule || !capsule.signature) {
+// verifyKey may be a public KeyObject or a shared-secret string (derived). A
+// verifier holding only the public key can confirm authenticity but cannot forge.
+export function verifyMissionCapsule(capsule, verifyKey) {
+  if (!capsule || typeof capsule.signature !== "string") {
     return false;
   }
-
-  const expected = signCapsule(capsule, signingSecret).signature;
-  return timingSafeEqualStr(capsule.signature, expected);
+  if (!capsule.signature.startsWith("sz2.")) {
+    return false;
+  }
+  const unsigned = { ...capsule };
+  delete unsigned.signature;
+  return ed25519Verify(verifyKey, stableStringify(unsigned), capsule.signature.slice(4));
 }
 
 export function isExpired(capsule) {

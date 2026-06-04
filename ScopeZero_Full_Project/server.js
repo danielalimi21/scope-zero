@@ -157,7 +157,7 @@ server.on("connect", async (req, clientSocket, head) => {
         mission,
         host,
         requestedAgentId,
-        signingSecret: runtime.signingSecret
+        verifyKey: runtime.signingKeys.publicKey
       });
       allowed = decision.allowed;
       if (!allowed) blockReason = decision.reason;

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describeActionRequest } from "./actionAuthorization.js";
 import { createMissionCapsule, isExpired, verifyMissionCapsule } from "./capsules.js";
-import { createId, nowIso, sha256, stableStringify } from "./crypto.js";
+import { createId, loadSigningKeys, nowIso, publicKeyToPem, sha256, stableStringify } from "./crypto.js";
 import { evaluatePolicy } from "./policyEngine.js";
 import { evaluateMissionAlignment } from "./missionAlignment.js";
 import { classifyPayload, detectPromptInfluence, isExternalDestination } from "./sensitiveData.js";
@@ -14,7 +14,7 @@ import { analyzeToolCallBehavior, createEmptyProfile, updateBehaviorProfile } fr
 import { assessMcpCall, buildMcpServerRecord, isValidTrustLevel, computeTrustDecay, queryOsvVulnerabilities, applyTrustSignals } from "./mcpTrustRegistry.js";
 import { issueAgentCertificate, verifyAgentCertificate, verifyCertIdentity } from "./agentCert.js";
 
-export async function createRuntime({ rootDir, signingSecret, toolManifestResolver = null, approvalNotifier = null }) {
+export async function createRuntime({ rootDir, signingSecret, signingPrivateKeyPem = process.env.SCOPEZERO_SIGNING_PRIVATE_KEY || "", toolManifestResolver = null, approvalNotifier = null }) {
   const defaultPolicy = JSON.parse(await readFile(new URL("../config/defaultPolicy.json", import.meta.url), "utf8"));
   const store = process.env.SCOPEZERO_STORE === "postgres"
     ? new PostgresStore({ connectionString: process.env.DATABASE_URL, defaultPolicy })
@@ -25,14 +25,19 @@ export async function createRuntime({ rootDir, signingSecret, toolManifestResolv
   });
   await store.init();
   await ledger.init();
-  return new ScopeZeroRuntime({ store, ledger, signingSecret, toolManifestResolver, approvalNotifier });
+  return new ScopeZeroRuntime({ store, ledger, signingSecret, signingPrivateKeyPem, toolManifestResolver, approvalNotifier });
 }
 
 export class ScopeZeroRuntime {
-  constructor({ store, ledger, signingSecret, toolManifestResolver = null, approvalNotifier = null }) {
+  constructor({ store, ledger, signingSecret, signingPrivateKeyPem = "", toolManifestResolver = null, approvalNotifier = null }) {
     this.store = store;
     this.ledger = ledger;
     this.signingSecret = signingSecret;
+    // Ed25519 keypair. Private key signs capsules + certs; the public key verifies
+    // and is safe to distribute to the proxy and external auditors. In production
+    // pass signingPrivateKeyPem so the secret string is never the key material.
+    this.signingKeys = loadSigningKeys({ privateKeyPem: signingPrivateKeyPem, secret: signingSecret });
+    this.publicKeyPem = publicKeyToPem(this.signingKeys.publicKey);
     this.toolManifestResolver = toolManifestResolver;
     this.approvalNotifier = approvalNotifier;
     this.decisionCache = new Map();
@@ -59,7 +64,7 @@ export class ScopeZeroRuntime {
     requireFields(input, ["tenant_id", "agent_id"]);
     const agent = this.store.getAgent(input.tenant_id, input.agent_id);
     if (!agent) throw httpError(404, "unknown_agent", "Agent is not registered.");
-    const cert = issueAgentCertificate(agent, this.signingSecret, {
+    const cert = issueAgentCertificate(agent, this.signingKeys.privateKey, {
       ttlMs: input.ttl_ms || undefined
     });
     await this.store.addAgentCert(cert);
@@ -131,7 +136,7 @@ export class ScopeZeroRuntime {
         spawned_by_agent_id,
         delegation_depth
       },
-      this.signingSecret
+      this.signingKeys.privateKey
     );
     await this.store.addMission(capsule);
     const chain = resolveChain(capsule.id, this.store);
@@ -198,7 +203,7 @@ export class ScopeZeroRuntime {
       evaluated_at: nowIso()
     };
 
-    let capsuleValid = Boolean(mission && verifyMissionCapsule(mission, this.signingSecret) && !isExpired(mission));
+    let capsuleValid = Boolean(mission && verifyMissionCapsule(mission, this.signingKeys.publicKey) && !isExpired(mission));
     let verdict;
     const cacheKey = decisionCacheKey({
       input,
@@ -266,7 +271,7 @@ export class ScopeZeroRuntime {
       if (!cert) {
         certResult = { valid: false, code: "cert-not-found", message: `Certificate ${input.agent_cert_id} not found.` };
       } else {
-        certResult = verifyAgentCertificate(cert, this.signingSecret);
+        certResult = verifyAgentCertificate(cert, this.signingKeys.publicKey);
         if (certResult.valid) {
           const identityCheck = verifyCertIdentity(cert, input.agent_id, input.tenant_id);
           if (!identityCheck.valid) certResult = identityCheck;

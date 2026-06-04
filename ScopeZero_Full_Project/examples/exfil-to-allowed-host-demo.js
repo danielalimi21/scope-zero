@@ -131,7 +131,7 @@ async function main() {
     mission: runtime.store.getMission(capsule.id, TENANT),
     host: ALLOWED_HOST,
     requestedAgentId: AGENT,
-    signingSecret: SECRET
+    verifyKey: SECRET
   });
   check(
     "host-only proxy allows the CONNECT (host is in contract) — proving the action layer is what catches the leak",

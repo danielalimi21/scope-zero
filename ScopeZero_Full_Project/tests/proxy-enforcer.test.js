@@ -115,7 +115,7 @@ test("evaluateProxyConnect allows a live, signed, in-contract destination", () =
     mission: liveMission(),
     host: "diligence-room.contoso.example",
     requestedAgentId: "agent.proxy",
-    signingSecret: PROXY_SECRET
+    verifyKey: PROXY_SECRET
   });
   assert.equal(result.allowed, true);
   assert.equal(result.reason, null);
@@ -127,7 +127,7 @@ test("evaluateProxyConnect blocks an expired mission even if the destination mat
     mission,
     host: "diligence-room.contoso.example",
     requestedAgentId: "agent.proxy",
-    signingSecret: PROXY_SECRET,
+    verifyKey: PROXY_SECRET,
     now: new Date(new Date(mission.expires_at).getTime() + 1000)
   });
   assert.equal(result.allowed, false);
@@ -140,7 +140,7 @@ test("evaluateProxyConnect blocks a tampered (invalid signature) mission", () =>
     mission,
     host: "diligence-room.contoso.example",
     requestedAgentId: "agent.proxy",
-    signingSecret: PROXY_SECRET
+    verifyKey: PROXY_SECRET
   });
   assert.equal(result.allowed, false);
   assert.equal(result.reason, "mission_signature_invalid");
@@ -151,7 +151,7 @@ test("evaluateProxyConnect blocks when a different agent presents the mission", 
     mission: liveMission(),
     host: "diligence-room.contoso.example",
     requestedAgentId: "agent.someone-else",
-    signingSecret: PROXY_SECRET
+    verifyKey: PROXY_SECRET
   });
   assert.equal(result.allowed, false);
   assert.equal(result.reason, "mission_agent_mismatch");
@@ -162,14 +162,14 @@ test("evaluateProxyConnect blocks an out-of-contract destination", () => {
     mission: liveMission(),
     host: "pastebin.com",
     requestedAgentId: "agent.proxy",
-    signingSecret: PROXY_SECRET
+    verifyKey: PROXY_SECRET
   });
   assert.equal(result.allowed, false);
   assert.equal(result.reason, "destination_not_in_mission_contract");
 });
 
 test("evaluateProxyConnect blocks when no mission is bound to the connection", () => {
-  const result = evaluateProxyConnect({ mission: null, host: "diligence-room.contoso.example", signingSecret: PROXY_SECRET });
+  const result = evaluateProxyConnect({ mission: null, host: "diligence-room.contoso.example", verifyKey: PROXY_SECRET });
   assert.equal(result.allowed, false);
   assert.equal(result.reason, "no_active_mission");
 });

@@ -298,7 +298,7 @@ Response:
 ## Tech Stack
 - **Runtime:** Node.js ES modules, `node --test` (no external test framework)
 - **Storage:** SQLite (`node:sqlite`, `DatabaseSync`) local; Postgres with RLS in production
-- **Crypto:** `node:crypto` — HMAC-SHA256 for signatures and the keyed ledger chain (constant-time comparison), SHA-256 for fingerprints
+- **Crypto:** `node:crypto` — Ed25519 for mission-capsule and agent-cert signatures (private key signs, public key verifies and is safe to distribute; `SCOPEZERO_SIGNING_PRIVATE_KEY` in prod, derived from the shared secret in dev), HMAC-SHA256 for the keyed ledger chain (constant-time comparison), SHA-256 for fingerprints
 - **Auth:** JWT (HS256 pinned / RS256 OIDC), dev token endpoint, OIDC/JWKS support
 - **Tests:** 192 tests, 0 failures
 - **No runtime dependencies** beyond Node.js builtins for the core gateway

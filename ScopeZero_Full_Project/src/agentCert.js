@@ -1,9 +1,9 @@
-import { createId, hmacSha256, nowIso, sha256, stableStringify, timingSafeEqualStr } from "./crypto.js";
+import { createId, ed25519Sign, ed25519Verify, nowIso, sha256, stableStringify, timingSafeEqualStr } from "./crypto.js";
 
 const CERT_VERSION = "scopezero.agent.cert.v1";
 export const DEFAULT_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
 
-export function issueAgentCertificate(agent, signingSecret, { ttlMs = DEFAULT_TTL_MS } = {}) {
+export function issueAgentCertificate(agent, signingKey, { ttlMs = DEFAULT_TTL_MS } = {}) {
   const issuedAt = new Date();
   const expiresAt = new Date(issuedAt.getTime() + ttlMs);
 
@@ -24,7 +24,7 @@ export function issueAgentCertificate(agent, signingSecret, { ttlMs = DEFAULT_TT
   };
 
   const fingerprint = sha256(stableStringify(body));
-  const signature = signCert(fingerprint, agent.agent_id, agent.tenant_id, expiresAt.toISOString(), signingSecret);
+  const signature = signCert(fingerprint, agent.agent_id, agent.tenant_id, expiresAt.toISOString(), signingKey);
 
   return {
     cert_id: createId("cert", `${agent.tenant_id}:${agent.agent_id}`),
@@ -35,7 +35,7 @@ export function issueAgentCertificate(agent, signingSecret, { ttlMs = DEFAULT_TT
   };
 }
 
-export function verifyAgentCertificate(cert, signingSecret) {
+export function verifyAgentCertificate(cert, verifyKey) {
   if (!cert) {
     return { valid: false, code: "missing-cert", message: "No certificate provided." };
   }
@@ -56,8 +56,8 @@ export function verifyAgentCertificate(cert, signingSecret) {
     return { valid: false, code: "cert-fingerprint-mismatch", message: "Certificate body has been tampered with." };
   }
 
-  const expectedSig = signCert(fingerprint, cert.agent_id, cert.tenant_id, cert.expires_at, signingSecret);
-  if (!timingSafeEqualStr(signature, expectedSig)) {
+  const signedMessage = certSigningMessage(fingerprint, cert.agent_id, cert.tenant_id, cert.expires_at);
+  if (!ed25519Verify(verifyKey, signedMessage, signature)) {
     return { valid: false, code: "cert-signature-invalid", message: "Certificate signature verification failed." };
   }
 
@@ -79,6 +79,10 @@ export function certFingerprint(cert) {
   return cert?.fingerprint || null;
 }
 
-function signCert(fingerprint, agentId, tenantId, expiresAt, secret) {
-  return hmacSha256(secret, `${fingerprint}:${agentId}:${tenantId}:${expiresAt}`);
+function certSigningMessage(fingerprint, agentId, tenantId, expiresAt) {
+  return `${fingerprint}:${agentId}:${tenantId}:${expiresAt}`;
+}
+
+function signCert(fingerprint, agentId, tenantId, expiresAt, signingKey) {
+  return ed25519Sign(signingKey, certSigningMessage(fingerprint, agentId, tenantId, expiresAt));
 }

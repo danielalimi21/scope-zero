@@ -36,7 +36,7 @@ npm run bench       # persistence hot-path throughput
 
 ## Architecture in five lines
 
-- **Mission capsule** (`src/capsules.js`) — HMAC-signed, TTL-bounded authorization token; vendor-neutral action contracts `(tool, operation, data_class, destination)`.
+- **Mission capsule** (`src/capsules.js`) — Ed25519-signed, TTL-bounded authorization token (private key signs at the gateway; verifiers hold only the public key, so a leaked verify key can't forge a mission); vendor-neutral action contracts `(tool, operation, data_class, destination)`.
 - **Enforcement** — Layer 1 pre-exec gateway (SDK, action-level; fail-closed on block/approval *and* on gateway error, redact enforced via a redactor), Layer 2 HTTPS `CONNECT` proxy (mission-bound, destination-level), Layer 3 kernel egress block (K8s NetworkPolicy *or* Docker internal network, fail-closed).
 - **Ledger** (`src/ledger.js`) — append-only, HMAC-keyed hash chain, optional external anchoring.
 - **Advisory signals (not the guarantee)** — these raise risk and route to human approval; they never stand alone as the block, because the deterministic contract gates do that. Server-side data classification (keyword-based — and egress of content it *can't* positively class is held for review rather than trusted as public); an obfuscation-normalizing prompt-influence heuristic (homoglyph fold, letter-spacing/punctuation collapse, base64 — strong on the adversarial corpus in `tests/prompt-injection-corpus.test.js`, but a denylist by nature, so we treat it as a signal); a keyword-overlap intent-drift screen (not semantic "understanding"); behavioral anomaly detection; MCP trust registry; agent identity certs.

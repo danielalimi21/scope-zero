@@ -10,12 +10,14 @@ import { verifyMissionCapsule } from "./capsules.js";
 // (unexpired + active), owned by the requesting agent, and whose action
 // contracts permit the destination host. Every failure has a distinct reason
 // so the ledger records *why* a tunnel was refused. Pure + deterministic
-// (`now`/`signingSecret` injectable) so it is unit-testable without sockets.
-export function evaluateProxyConnect({ mission, host, requestedAgentId = null, signingSecret = "", now = new Date() }) {
+// (`now`/`verifyKey` injectable) so it is unit-testable without sockets.
+// verifyKey is the Ed25519 public key (or a shared-secret string in dev); a proxy
+// holding only the public key can authenticate a mission but cannot forge one.
+export function evaluateProxyConnect({ mission, host, requestedAgentId = null, verifyKey = "", now = new Date() }) {
   if (!mission) {
     return { allowed: false, reason: "no_active_mission", mission_id: null };
   }
-  if (signingSecret && !verifyMissionCapsule(mission, signingSecret)) {
+  if (verifyKey && !verifyMissionCapsule(mission, verifyKey)) {
     return { allowed: false, reason: "mission_signature_invalid", mission_id: mission.id || null };
   }
   if (!mission.expires_at || new Date(mission.expires_at).getTime() < now.getTime()) {

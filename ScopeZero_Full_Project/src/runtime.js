@@ -194,9 +194,19 @@ export class ScopeZeroRuntime {
     const agent = this.store.getAgent(input.tenant_id, input.agent_id);
     const mission = this.store.getMission(input.mission_id, input.tenant_id);
     const sessionId = input.session_id || `${input.agent_id}:${input.mission_id}`;
+    // Ingest-taint is tracked at MISSION scope, not on the caller-supplied session
+    // string alone. mission_id is server-resolved and Ed25519-bound, so a
+    // prompt-injected agent cannot reset accrued taint by sending a fresh
+    // session_id — the laundering guard always sees the mission's full exposure.
+    // The session keeps its own sub-scope mark; the effective taint is the max of
+    // the two, so taint can only ever be raised by switching scopes, never lowered.
+    const taintScopeKey = input.mission_id ? `mission:${input.mission_id}` : sessionId;
     const currentSessionRisk = await this.store.getSessionRisk(sessionId, input.tenant_id);
     const priorIngestedClassRank = this.store.getSessionIngestedClass
-      ? await this.store.getSessionIngestedClass(sessionId, input.tenant_id)
+      ? Math.max(
+          await this.store.getSessionIngestedClass(sessionId, input.tenant_id),
+          taintScopeKey === sessionId ? 0 : await this.store.getSessionIngestedClass(taintScopeKey, input.tenant_id)
+        )
       : 0;
     let classification = classifyPayload(input.payload || {});
     if (this.classifierResolver) {
@@ -366,7 +376,11 @@ export class ScopeZeroRuntime {
     // call is judged against what the session had touched before it, and the next
     // call inherits the exposure this one added.
     if (this.store.updateSessionIngestedClass && ingestedClassRank > 0) {
-      verdict.session_ingested_class_rank = await this.store.updateSessionIngestedClass(sessionId, ingestedClassRank, input.tenant_id);
+      const sessionRank = await this.store.updateSessionIngestedClass(sessionId, ingestedClassRank, input.tenant_id);
+      const missionRank = taintScopeKey === sessionId
+        ? sessionRank
+        : await this.store.updateSessionIngestedClass(taintScopeKey, ingestedClassRank, input.tenant_id);
+      verdict.session_ingested_class_rank = Math.max(sessionRank, missionRank, priorIngestedClassRank);
     } else {
       verdict.session_ingested_class_rank = priorIngestedClassRank;
     }

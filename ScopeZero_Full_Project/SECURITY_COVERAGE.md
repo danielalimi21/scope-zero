@@ -16,7 +16,7 @@ Every "covered" claim points at a concrete control so it can be verified, not ta
 | # | Risk | Coverage | ScopeZero control |
 |---|------|----------|-------------------|
 | LLM01 | Prompt Injection | **Strong by containment, not by detection** | We assume injection *succeeds*. The strength is that the resulting **action** is contained by the deterministic contract gates and the kernel egress block regardless of whether detection fired. Detection itself is best-effort and advisory: an obfuscation-normalizing prompt-influence heuristic (`src/sensitiveData.js`; homoglyph/spacing/leet/base64 — passes the adversarial corpus in `tests/prompt-injection-corpus.test.js`, but a denylist, so novel phrasings and other languages will slip it) → `quarantine_context`; plus a keyword-overlap intent-drift screen (not semantic understanding) → human approval. Neither signal is sold as the control. |
-| LLM02 | Sensitive Information Disclosure | **Strong** | Server-side data classification (keyword + structured value detection: Luhn cards, IBAN, SSN, secret prefixes, high-entropy tokens; pluggable external classifier seam) + `sensitive_egress_guard`, `redact` verdict, and mission-bound destination contracts. Egress whose class can't be positively established from the bytes is held (`unverified-egress-class`), and a manifest's declared output class is a verified ceiling, not a skip. **Anti-laundering:** a session that ingested confidential data and then sends lower-classed content externally is held (`tainted-session-egress`) — catching data the model rewrote into benign-looking prose, which no content inspection can see. HTTPS egress allow-listed at the proxy + kernel (K8s NetworkPolicy), DNS pinned to the cluster resolver. *Limit:* taint only covers material the gateway actually sees (payload or declared context). |
+| LLM02 | Sensitive Information Disclosure | **Strong** | Server-side data classification (keyword + structured value detection: Luhn cards, IBAN, dashed SSN, a broad credential-shape set, high-entropy tokens; pluggable external classifier seam) + `sensitive_egress_guard`, `redact` verdict, and mission-bound destination contracts. Egress whose class can't be positively established from the bytes is held (`unverified-egress-class`), and a manifest's declared output class is a verified ceiling, not a skip. **Anti-laundering:** a *mission* that ingested confidential data and then sends lower-classed content externally is held (`tainted-session-egress`) — catching data the model rewrote into benign-looking prose, which no content inspection can see. Taint is keyed at mission scope (Ed25519-bound `mission_id`), so it can't be reset by rotating the caller-supplied `session_id`; "external" is established from the address, so a caller can't self-declare a destination "internal" to dodge the guard. For the residual the gateway never sees (a secret read out-of-band, laundered into prose on a never-tainted session), the opt-in `seal_sensitive_mission_egress` holds *all* external egress of a confidential-cleared mission for review. HTTPS egress allow-listed at the proxy + kernel (K8s NetworkPolicy), DNS pinned to the cluster resolver. *Limit:* without the seal, taint only covers material the gateway actually sees (payload or declared context); the byte-classifier alone cannot catch low-volume prose-laundered secrets — that needs the seal or the external classifier seam. |
 | LLM03 | Supply Chain | **Partial** | MCP trust registry with OSV CVE signals + scheduled refresh + trust decay (`src/mcpTrustRegistry.js`); agent identity certificates. Covers MCP-server provenance/CVE; does not scan model weights. |
 | LLM04 | Data and Model Poisoning | **Out of scope** | Training-time concern. ScopeZero is runtime; the hash-chained ledger provides forensic evidence after the fact. |
 | LLM05 | Improper Output Handling | **Partial** | Vendor-neutral action contracts gate `(tool, operation, data_class, destination)`; `redact` and approval gates on high-impact actions. Downstream sanitization of model output in the consuming app remains the app's responsibility. |
@@ -46,14 +46,28 @@ fail-closed at the kernel when it tries to reach the network, and provable in a
 tamper-evident ledger. That is the slice of the AI-security problem ScopeZero
 owns, and within it the coverage above is real and test-backed.
 
-The egress controls reason about content two ways: the *bytes* (keyword +
-structured-value + shape classification, with a verified manifest ceiling) and
-the *session's exposure* (ingest-taint, for laundering the bytes can't reveal).
-Both are honest about their reach. The bytes classifier is heuristic — a
-low-volume secret laundered into natural prose, or non-English content, needs the
-pluggable external classifier to catch; the regex default will miss it. Ingest-
-taint only sees material that passes through the gateway, so a tool result fed
-straight to the model without ever crossing ScopeZero is invisible to it. And the
-network layer is host-only by design (TLS bodies are opaque to the CONNECT proxy)
-and does not yet block recursive DNS-tunnel exfil — those are a filtering-resolver
-and a TLS-terminating-proxy concern on the roadmap, not claims made here.
+The egress controls reason about content three ways: the *bytes* (keyword +
+structured-value + shape classification, with a verified manifest ceiling), the
+*mission's exposure* (ingest-taint, for laundering the bytes can't reveal), and
+the *mission's posture* (the opt-in egress seal). All three are honest about their
+reach:
+
+- The **bytes classifier** is heuristic — a low-volume secret laundered into
+  natural prose, or non-English content, will be missed by the regex default; that
+  needs the pluggable external classifier or the seal.
+- **Ingest-taint** is keyed at mission scope (`mission_id`, which is
+  server-resolved and Ed25519-bound), so it cannot be reset by rotating the
+  caller-supplied `session_id`. It still only sees material that crossed the
+  gateway: a tool result fed straight to the model without ever passing through
+  ScopeZero is invisible to it.
+- The **egress seal** (`seal_sensitive_mission_egress`, off by default) is the
+  answer for that last residual on high-assurance missions: it holds *all* external
+  egress of a confidential-cleared mission for review, accepting more approvals in
+  exchange for not trusting benign-looking bytes at all.
+
+And the network layer is host-only by design (TLS bodies are opaque to the CONNECT
+proxy) and does not yet block recursive DNS-tunnel exfil — those are a
+filtering-resolver and a TLS-terminating-proxy concern on the roadmap, not claims
+made here. The egress-lockdown self-test now fails closed (non-zero exit) when a
+lockdown is declared but not actually applied, so "configured" and "enforced" can't
+silently diverge in CI or a deploy gate.

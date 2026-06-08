@@ -38,8 +38,9 @@ demonstrate breadth and is not what the product leads with.
 - Mission action contracts signed into short-lived capsules.
 - Pre-execution action authorization API.
 - Runtime policy engine with allow, block, redact, quarantine, approval, and pause decisions — the deterministic contract gates (tool / operation / data class / destination) are the controls that actually block.
-- Fail-closed-on-unknown egress: outbound content whose data class can't be positively established *from the bytes* is held for human review, not trusted as public — a tool manifest's declared output class is a verified ceiling, not a skip-flag, so this catches exfiltration to an in-contract host through any tool, manifested or not (`npm run demo:exfil`).
-- Ingest-taint / anti-laundering: a session that has read confidential data and then sends lower-classed content to an external destination is held for review — catching data the model rewrote into benign-looking prose, which no content inspection can see (`npm run demo:breach`, step 7).
+- Fail-closed-on-unknown egress: outbound content whose data class can't be positively established *from the bytes* is held for human review, not trusted as public — a tool manifest's declared output class is a verified ceiling, not a skip-flag, so this catches exfiltration to an in-contract host through any tool, manifested or not (`npm run demo:exfil`). "External" is established from the destination address, so a caller cannot self-declare a destination "internal" to dodge the check.
+- Ingest-taint / anti-laundering: a *mission* that has read confidential data and then sends lower-classed content to an external destination is held for review — catching data the model rewrote into benign-looking prose, which no content inspection can see (`npm run demo:breach`, step 7). Taint is keyed at mission scope (the Ed25519-bound `mission_id`), so a prompt-injected agent cannot reset it by rotating its `session_id`.
+- Sensitive-mission egress seal (opt-in `seal_sensitive_mission_egress`): for the residual the bytes and taint can't see — a secret read out-of-band and laundered into prose on a never-tainted session — a confidential-cleared mission can have *all* its external egress held for review, with per-destination public-broadcast exceptions. The honest acknowledgement that benign-looking bytes can't be trusted on a sensitive mission.
 - Content classification: keyword + structured-value detection (Luhn cards, IBAN, SSN, secret prefixes, high-entropy tokens) with a pluggable seam for an embedding/commercial-DLP classifier.
 - Hash-chained, HMAC-keyed evidence ledger with verification tooling and optional external anchoring.
 - Agent SDK (authorize-then-execute, fail-closed on block/approval and on gateway error).
@@ -253,6 +254,7 @@ See [config/production.env.example](config/production.env.example), [k8s](k8s), 
 - [.github/workflows/scopezero-ci.yml](.github/workflows/scopezero-ci.yml) - CI verification workflow.
 - [PRODUCT_ARCHITECTURE.md](PRODUCT_ARCHITECTURE.md) - technical architecture.
 - [SECURITY_REVIEW.md](SECURITY_REVIEW.md) - security review and threat model.
+- [RED_TEAM.md](RED_TEAM.md) - adversarial log: attacks tried, what's closed, what isn't.
 - [GA_RELEASE_CHECKLIST.md](GA_RELEASE_CHECKLIST.md) - checklist before full general availability.
 
 ## Status

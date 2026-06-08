@@ -21,6 +21,7 @@
   "mutating_operations": ["write", "export", "payment", "privilege_change", "delegate", "external_send"],
   "unknown_egress_requires_approval": true,
   "sensitive_ingest_egress_guard": true,
+  "seal_sensitive_mission_egress": false,
   "ingest_taint_block_level": 4,
   "sensitive_data_block_level": 4,
   "behavior_daily_volume_cap": 500,

@@ -18,13 +18,28 @@ const FINDERS = [
 // Value-shape detectors: fire on the STRUCTURE of a sensitive value, with no
 // topic keyword nearby. This is what closes "a card number / secret / SSN dropped
 // into otherwise-benign prose" — the keyword classifier above is blind to it.
+// High-signal credential shapes, chosen for a low false-positive rate (each has a
+// distinctive prefix/structure that does not collide with ordinary identifiers).
+// We deliberately do NOT match a bare 9-digit run as an SSN: every order number,
+// account id, and phone-without-formatting is 9 digits, so it would flag constant
+// benign traffic. Keyword-near SSN and the dashed value pattern cover the real case;
+// semantic/contextual SSN detection is the external classifier's job.
 const SECRET_PREFIX_PATTERNS = [
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\bghp_[A-Za-z0-9]{36}\b/,
-  /\bgithub_pat_[A-Za-z0-9_]{22,}\b/,
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
-  /\bsk-[A-Za-z0-9]{20,}\b/,
-  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/
+  /\bAKIA[0-9A-Z]{16}\b/,                                   // AWS access key id
+  /\bASIA[0-9A-Z]{16}\b/,                                   // AWS temporary access key id
+  /\bghp_[A-Za-z0-9]{36}\b/,                                // GitHub personal access token
+  /\bgho_[A-Za-z0-9]{36}\b/,                                // GitHub OAuth token
+  /\bghs_[A-Za-z0-9]{36}\b/,                                // GitHub server-to-server token
+  /\bgithub_pat_[A-Za-z0-9_]{22,}\b/,                       // GitHub fine-grained PAT
+  /\bglpat-[A-Za-z0-9_-]{20,}\b/,                           // GitLab personal access token
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,                       // Slack token
+  /\bsk-[A-Za-z0-9]{20,}\b/,                                // OpenAI-style secret key
+  /\bsk_live_[A-Za-z0-9]{16,}\b/,                           // Stripe live secret key
+  /\brk_live_[A-Za-z0-9]{16,}\b/,                           // Stripe live restricted key
+  /\bAIza[0-9A-Za-z_-]{35}\b/,                              // Google API key
+  /\bya29\.[0-9A-Za-z_-]{20,}\b/,                           // Google OAuth access token
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/, // JWT (header.payload.sig)
+  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/               // PEM private key
 ];
 
 const VALUE_FINDERS = [
@@ -315,13 +330,22 @@ export function detectPromptInfluence(context = {}, policy = {}) {
   };
 }
 
+// A caller may ASSERT external=true (raise sensitivity), but may NOT assert
+// external=false to suppress the egress guards. "External" is established from the
+// destination address against the policy's trusted list; a self-declared
+// "internal" flag never overrides an address that isn't trusted. Otherwise a
+// prompt-injected agent would just stamp { external: false } on a pastebin write
+// to walk every egress control. Fail closed: unknown/unaddressed targets that
+// aren't positively trusted are treated as external.
 export function isExternalDestination(destination = {}, policy = {}) {
-  if (typeof destination.external === "boolean") {
-    return destination.external;
+  if (destination.external === true) {
+    return true;
   }
 
   const target = String(destination.address || destination.url || destination.host || "").toLowerCase();
   if (!target) {
+    // No address. Trust an explicit internal assertion only when there is nothing
+    // to check it against; any positive address is evaluated against the list.
     return false;
   }
 

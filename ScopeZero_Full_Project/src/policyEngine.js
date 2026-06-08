@@ -135,6 +135,30 @@ export function evaluatePolicy({ request, mission, agent, policy, classification
     decision = "approval";
   }
 
+  // Sensitive-mission egress seal (opt-in, posture-based). Taint and shape only
+  // catch laundering the gateway can SEE — the ingest crossed ScopeZero, or the
+  // bytes carry a dump shape. Neither catches a low-volume secret the model read
+  // out-of-band and rewrote into benign prose: those bytes classify as
+  // "established public", so establishment cannot be the all-clear here. When a
+  // mission is explicitly cleared to handle confidential/restricted data, this
+  // seals ALL of its meaningful external egress to human review — the only sound
+  // posture once we accept that benign-looking bytes may be laundered. The
+  // mission's data clearance is the trigger, so it closes the "gateway never saw
+  // the read" gap at the cost of an approval on each external post. Off by default;
+  // turned on per-tenant for high-assurance missions. A contract may still mark a
+  // specific destination as a public-broadcast sink to keep that lane autonomous.
+  if (
+    policy.seal_sensitive_mission_egress &&
+    externalDestination &&
+    hasMeaningfulPayload(request) &&
+    missionHandlesSensitiveData(mission) &&
+    !destinationIsPublicSink(mission, action) &&
+    decision === "allow"
+  ) {
+    addRisk(22, "sensitive-mission-egress-sealed", `Mission is cleared for ${rankLabel(maxMissionClassRank(mission))} data; external egress is sealed to human review (benign-looking bytes may be laundered confidential content). Mark a destination as a public-broadcast sink in the contract to keep it autonomous.`);
+    decision = "approval";
+  }
+
   if (Number(request.delegation_depth || 0) > Number(policy.max_delegation_depth || 0)) {
     addRisk(28, "delegation-depth", "Agent attempted to delegate beyond the allowed chain depth.");
     decision = "block";
@@ -234,6 +258,43 @@ function manifestMaxOutRank(action) {
     return null;
   }
   return Math.max(...classes.map(dataClassRank));
+}
+
+// Highest data class the mission is cleared to handle, as a numeric rank.
+function maxMissionClassRank(mission) {
+  const classes = mission?.allowed_data_classes;
+  if (!Array.isArray(classes) || !classes.length) {
+    return 0;
+  }
+  return Math.max(...classes.map(dataClassRank));
+}
+
+// A mission cleared for confidential (rank 4) or higher data.
+function missionHandlesSensitiveData(mission) {
+  return maxMissionClassRank(mission) >= 4;
+}
+
+// An action contract may flag a destination as an intentional public-broadcast
+// sink (public_egress_ok / public_sink: true) — e.g. a status page the mission is
+// explicitly meant to post to. Egress to such a destination stays autonomous even
+// under the seal; everything else on a sensitive mission is held for review.
+function destinationIsPublicSink(mission, action) {
+  const address = action?.destination?.address;
+  if (!address) {
+    return false;
+  }
+  const contracts = mission?.action_contracts || [];
+  return contracts.some((contract) => {
+    if (contract.public_egress_ok !== true && contract.public_sink !== true) {
+      return false;
+    }
+    const dests = contract.destinations || [];
+    return dests.some((d) => {
+      const norm = String(d).toLowerCase();
+      const addr = String(address).toLowerCase();
+      return norm === "*" || norm === addr || addr.endsWith(norm);
+    });
+  });
 }
 
 function rankLabel(rank) {

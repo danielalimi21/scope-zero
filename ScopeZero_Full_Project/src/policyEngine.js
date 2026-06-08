@@ -1,6 +1,6 @@
-import { dataClassAllowed, destinationAllowed, evaluateActionContract } from "./actionAuthorization.js";
+import { dataClassAllowed, dataClassRank, destinationAllowed, evaluateActionContract } from "./actionAuthorization.js";
 
-export function evaluatePolicy({ request, mission, agent, policy, classification, promptInfluence, missionAlignment, externalDestination, currentSessionRisk }) {
+export function evaluatePolicy({ request, mission, agent, policy, classification, promptInfluence, missionAlignment, externalDestination, currentSessionRisk, sessionIngestedClassRank = 0 }) {
   const reasons = [];
   const controls = [];
   let decision = "allow";
@@ -86,22 +86,52 @@ export function evaluatePolicy({ request, mission, agent, policy, classification
     decision = "block";
   }
 
-  // Fail closed on UNKNOWN egress. The keyword classifier is blind to sensitive
-  // content that carries no trigger term (raw tables, source code, opaque dumps),
-  // so a "public" verdict on outbound content is an absence of evidence, not
-  // evidence of absence. When content with no positively established data class
-  // crosses an external boundary and no tool manifest declares the tool's output
-  // class, route to a human instead of trusting it as public. This is the control
-  // that closes exfiltration to an in-contract host.
+  // Egress is checked against the BYTES, not the tool's self-declared manifest. A
+  // manifest's data_out_classes is a CEILING that must hold against the actual
+  // payload — never a flag that skips the check. This closes exfiltration to an
+  // in-contract host through ANY tool, manifested or not, because a prompt-injected
+  // agent picks the tool and would otherwise just pick the one with the friendliest
+  // manifest.
+  if (policy.unknown_egress_requires_approval && externalDestination && hasMeaningfulPayload(request)) {
+    const manifestOutRank = manifestMaxOutRank(action);
+
+    // (1) Ceiling violation: the payload classified HIGHER than the tool's declared
+    // output class. The manifest's promise is contradicted by the bytes, so the tool
+    // is either mis-declared or being abused as an exfil channel — route to a human.
+    if (manifestOutRank !== null && classification.level > manifestOutRank && decision !== "block") {
+      addRisk(30, "manifest-output-class-exceeded", `Outbound ${classification.label} content exceeds the declared output ceiling (${rankLabel(manifestOutRank)}) for ${action.tool}; the manifest is contradicted by the payload.`);
+      decision = stronger(decision, "approval");
+    }
+
+    // (2) Unknown/opaque egress: the data class could not be POSITIVELY established
+    // as public from the bytes (keyword classifier found nothing AND the payload has
+    // a bulk/tabular/encoded/large shape). A manifest declaring "public" does not
+    // override opaque bytes. Treat a missing `established` flag as not-established
+    // (fail closed). Route to a human rather than trusting it as public.
+    else if (classification.level <= 1 && classification.established !== true && decision === "allow") {
+      const shape = classification.egress_shape ? ` (payload shape: ${classification.egress_shape})` : "";
+      addRisk(16, "unverified-egress-class", `Outbound content has no positively established data class (keyword classifier found nothing; class not established from the bytes)${shape}. Routing to human review rather than trusting it as public.`);
+      decision = "approval";
+    }
+  }
+
+  // Ingest-taint / laundering guard. You cannot inspect laundered bytes — content
+  // read as confidential and rewritten by the model into benign-looking prose
+  // leaves looking benign. So judge egress by what the SESSION has been exposed to,
+  // not just the outbound bytes: when the session has ingested data at or above the
+  // taint block level and is now sending lower-classed content to an external
+  // destination (a possible downgrade/launder), route to a human. Egress at or
+  // above the ingested class is already governed by the data-class/destination
+  // gates, so this fires only on the downgrade case.
   if (
-    policy.unknown_egress_requires_approval &&
+    policy.sensitive_ingest_egress_guard &&
     externalDestination &&
-    classification.level <= 1 &&
-    !(action?.tool_manifest?.data_out_classes?.length) &&
     hasMeaningfulPayload(request) &&
+    Number(sessionIngestedClassRank || 0) >= Number(policy.ingest_taint_block_level || 4) &&
+    classification.level < Number(sessionIngestedClassRank || 0) &&
     decision === "allow"
   ) {
-    addRisk(16, "unverified-egress-class", "Outbound content has no positively established data class (keyword classifier found nothing, no tool manifest declares the output class). Routing to human review rather than trusting it as public.");
+    addRisk(24, "tainted-session-egress", `Session has ingested ${rankLabel(sessionIngestedClassRank)} data; outbound ${classification.label} content to an external destination could be laundered. Routing to human review.`);
     decision = "approval";
   }
 
@@ -193,6 +223,24 @@ export function evaluatePolicy({ request, mission, agent, policy, classification
     controls.push(code);
     reasons.push({ code, message });
   }
+}
+
+// Highest data class the tool's manifest declares it ever emits, as a numeric
+// rank, or null when the tool has no manifest-declared output class. Used as the
+// egress ceiling the actual payload is checked against.
+function manifestMaxOutRank(action) {
+  const classes = action?.tool_manifest?.data_out_classes;
+  if (!Array.isArray(classes) || !classes.length) {
+    return null;
+  }
+  return Math.max(...classes.map(dataClassRank));
+}
+
+function rankLabel(rank) {
+  if (rank >= 5) return "restricted";
+  if (rank >= 4) return "confidential";
+  if (rank >= 2) return "internal";
+  return "public";
 }
 
 // Does the request carry outbound content worth classifying? Used so the

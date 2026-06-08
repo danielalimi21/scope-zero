@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { describeActionRequest } from "./actionAuthorization.js";
 import { createMissionCapsule, isExpired, verifyMissionCapsule } from "./capsules.js";
-import { createId, loadSigningKeys, nowIso, publicKeyToPem, sha256, stableStringify } from "./crypto.js";
+import { buildVerificationKeyset, createId, keyFingerprint, loadSigningKeys, nowIso, publicKeyToPem, sha256, stableStringify } from "./crypto.js";
 import { evaluatePolicy } from "./policyEngine.js";
 import { evaluateMissionAlignment } from "./missionAlignment.js";
-import { classifyPayload, detectPromptInfluence, isExternalDestination } from "./sensitiveData.js";
+import { classifyPayload, detectPromptInfluence, isExternalDestination, mergeClassification } from "./sensitiveData.js";
 import { Ledger } from "./ledger.js";
 import { createLedgerAnchorFromEnv } from "./ledgerAnchor.js";
 import { PostgresStore } from "./postgresStore.js";
@@ -14,7 +14,7 @@ import { analyzeToolCallBehavior, createEmptyProfile, updateBehaviorProfile } fr
 import { assessMcpCall, buildMcpServerRecord, isValidTrustLevel, computeTrustDecay, queryOsvVulnerabilities, applyTrustSignals } from "./mcpTrustRegistry.js";
 import { issueAgentCertificate, verifyAgentCertificate, verifyCertIdentity } from "./agentCert.js";
 
-export async function createRuntime({ rootDir, signingSecret, signingPrivateKeyPem = process.env.SCOPEZERO_SIGNING_PRIVATE_KEY || "", toolManifestResolver = null, approvalNotifier = null }) {
+export async function createRuntime({ rootDir, signingSecret, signingPrivateKeyPem = process.env.SCOPEZERO_SIGNING_PRIVATE_KEY || "", additionalPublicKeyPems = parsePublicKeyPems(process.env.SCOPEZERO_SIGNING_PUBLIC_KEYS), toolManifestResolver = null, approvalNotifier = null, classifierResolver = null }) {
   const defaultPolicy = JSON.parse(await readFile(new URL("../config/defaultPolicy.json", import.meta.url), "utf8"));
   const store = process.env.SCOPEZERO_STORE === "postgres"
     ? new PostgresStore({ connectionString: process.env.DATABASE_URL, defaultPolicy })
@@ -25,11 +25,22 @@ export async function createRuntime({ rootDir, signingSecret, signingPrivateKeyP
   });
   await store.init();
   await ledger.init();
-  return new ScopeZeroRuntime({ store, ledger, signingSecret, signingPrivateKeyPem, toolManifestResolver, approvalNotifier });
+  return new ScopeZeroRuntime({ store, ledger, signingSecret, signingPrivateKeyPem, additionalPublicKeyPems, toolManifestResolver, approvalNotifier, classifierResolver });
+}
+
+// Parse retired/rotated verification public keys from env: PEM blocks joined by
+// commas or newlines, or comma-separated file paths. Kept in the keyset so
+// capsules/certs signed under a previous key still verify after rotation.
+function parsePublicKeyPems(raw) {
+  if (!raw) return [];
+  return String(raw)
+    .split(/,(?=\s*-----BEGIN)|\n\n/)
+    .map((part) => part.trim())
+    .filter((part) => part.includes("-----BEGIN"));
 }
 
 export class ScopeZeroRuntime {
-  constructor({ store, ledger, signingSecret, signingPrivateKeyPem = "", toolManifestResolver = null, approvalNotifier = null }) {
+  constructor({ store, ledger, signingSecret, signingPrivateKeyPem = "", additionalPublicKeyPems = [], toolManifestResolver = null, approvalNotifier = null, classifierResolver = null }) {
     this.store = store;
     this.ledger = ledger;
     this.signingSecret = signingSecret;
@@ -38,8 +49,16 @@ export class ScopeZeroRuntime {
     // pass signingPrivateKeyPem so the secret string is never the key material.
     this.signingKeys = loadSigningKeys({ privateKeyPem: signingPrivateKeyPem, secret: signingSecret });
     this.publicKeyPem = publicKeyToPem(this.signingKeys.publicKey);
+    this.signingKid = keyFingerprint(this.signingKeys.publicKey);
+    // Verification keyset = current public key + any retired/rotated public keys.
+    // Capsules/certs carry a `kid`, so rotation keeps verifying live artifacts.
+    this.verificationKeyset = buildVerificationKeyset({ current: this.signingKeys.publicKey, additionalPublicKeyPems });
     this.toolManifestResolver = toolManifestResolver;
     this.approvalNotifier = approvalNotifier;
+    // Optional external classifier (embedding / model-graded / commercial DLP).
+    // Receives { payload, context, tool }, may return { level, findings, established,
+    // source }. Merged over the deterministic classifier — can only raise the class.
+    this.classifierResolver = classifierResolver;
     this.decisionCache = new Map();
   }
 
@@ -176,7 +195,19 @@ export class ScopeZeroRuntime {
     const mission = this.store.getMission(input.mission_id, input.tenant_id);
     const sessionId = input.session_id || `${input.agent_id}:${input.mission_id}`;
     const currentSessionRisk = await this.store.getSessionRisk(sessionId, input.tenant_id);
-    const classification = classifyPayload(input.payload || {});
+    const priorIngestedClassRank = this.store.getSessionIngestedClass
+      ? await this.store.getSessionIngestedClass(sessionId, input.tenant_id)
+      : 0;
+    let classification = classifyPayload(input.payload || {});
+    if (this.classifierResolver) {
+      const external = await this.classifierResolver({ payload: input.payload, context: input.context, tool: input.tool });
+      classification = mergeClassification(classification, external);
+    }
+    // What sensitive material has this call exposed the session to — the outbound
+    // payload AND the inbound context (retrieved docs / prior tool output). Drives
+    // the session ingest-taint high-water mark used by the laundering guard.
+    const contextClassification = classifyPayload(contextTextForTaint(input.context));
+    const ingestedClassRank = Math.max(classification.level, contextClassification.level);
     const promptInfluence = detectPromptInfluence(input.context || {}, policy);
     const externalDestination = isExternalDestination(input.destination || {}, policy);
     const actionDescriptor = describeActionRequest(
@@ -203,7 +234,7 @@ export class ScopeZeroRuntime {
       evaluated_at: nowIso()
     };
 
-    let capsuleValid = Boolean(mission && verifyMissionCapsule(mission, this.signingKeys.publicKey) && !isExpired(mission));
+    let capsuleValid = Boolean(mission && verifyMissionCapsule(mission, this.verificationKeyset) && !isExpired(mission));
     let verdict;
     const cacheKey = decisionCacheKey({
       input,
@@ -214,7 +245,8 @@ export class ScopeZeroRuntime {
       externalDestination,
       currentSessionRisk,
       promptInfluence,
-      missionAlignment
+      missionAlignment,
+      sessionIngestedClassRank: priorIngestedClassRank
     });
     const cached = capsuleValid ? this.readDecisionCache(cacheKey, policy) : null;
 
@@ -259,7 +291,8 @@ export class ScopeZeroRuntime {
         promptInfluence,
         missionAlignment,
         externalDestination,
-        currentSessionRisk
+        currentSessionRisk,
+        sessionIngestedClassRank: priorIngestedClassRank
       });
       this.writeDecisionCache(cacheKey, verdict, policy);
     }
@@ -271,7 +304,7 @@ export class ScopeZeroRuntime {
       if (!cert) {
         certResult = { valid: false, code: "cert-not-found", message: `Certificate ${input.agent_cert_id} not found.` };
       } else {
-        certResult = verifyAgentCertificate(cert, this.signingKeys.publicKey);
+        certResult = verifyAgentCertificate(cert, this.verificationKeyset);
         if (certResult.valid) {
           const identityCheck = verifyCertIdentity(cert, input.agent_id, input.tenant_id);
           if (!identityCheck.valid) certResult = identityCheck;
@@ -328,6 +361,15 @@ export class ScopeZeroRuntime {
 
     const sessionRisk = await this.store.updateSessionRisk(sessionId, verdict.risk_contribution, input.tenant_id);
     verdict.session_risk = sessionRisk;
+
+    // Raise the session ingest-taint high-water mark AFTER the decision, so this
+    // call is judged against what the session had touched before it, and the next
+    // call inherits the exposure this one added.
+    if (this.store.updateSessionIngestedClass && ingestedClassRank > 0) {
+      verdict.session_ingested_class_rank = await this.store.updateSessionIngestedClass(sessionId, ingestedClassRank, input.tenant_id);
+    } else {
+      verdict.session_ingested_class_rank = priorIngestedClassRank;
+    }
 
     let approval = null;
     if (verdict.decision === "approval") {
@@ -623,7 +665,17 @@ export class ScopeZeroRuntime {
   }
 }
 
-function decisionCacheKey({ input, policy, mission, actionDescriptor, classification, externalDestination, currentSessionRisk, promptInfluence, missionAlignment }) {
+// The inbound material the agent pulled into context (retrieved docs, prior tool
+// output, the working prompt). Classified for ingest-taint so the session is
+// judged by what it has been exposed to, not only the bytes it sends out.
+function contextTextForTaint(context = {}) {
+  return [context.source_text, context.tool_output, context.document_text, context.prompt, context.instruction, context.retrieved]
+    .filter(Boolean)
+    .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
+    .join("\n");
+}
+
+function decisionCacheKey({ input, policy, mission, actionDescriptor, classification, externalDestination, currentSessionRisk, promptInfluence, missionAlignment, sessionIngestedClassRank }) {
   if (!policy.decision_cache_enabled) {
     return null;
   }
@@ -640,6 +692,14 @@ function decisionCacheKey({ input, policy, mission, actionDescriptor, classifica
     operation: actionDescriptor.operation,
     action_type: actionDescriptor.action_type,
     data_class: actionDescriptor.data_class || classification.label,
+    // Two level-1 payloads share the "public" label but differ in whether the
+    // class was positively established from the bytes (benign prose vs. an opaque
+    // dump). Without this, an unestablished egress could reuse a clean cached allow.
+    egress_class_established: classification.established === true,
+    egress_shape: classification.egress_shape || null,
+    // Session ingest-taint changes the egress verdict (laundering guard), so a
+    // tainted session must not reuse a clean-session allow.
+    session_ingested_class_rank: Number(sessionIngestedClassRank || 0),
     destination: {
       address: actionDescriptor.destination?.address || "",
       external: Boolean(externalDestination)

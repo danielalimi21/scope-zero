@@ -38,7 +38,9 @@ demonstrate breadth and is not what the product leads with.
 - Mission action contracts signed into short-lived capsules.
 - Pre-execution action authorization API.
 - Runtime policy engine with allow, block, redact, quarantine, approval, and pause decisions — the deterministic contract gates (tool / operation / data class / destination) are the controls that actually block.
-- Fail-closed-on-unknown egress: outbound content whose data class can't be positively established is held for human review, not trusted as public — this is what catches exfiltration to an in-contract host (`npm run demo:exfil`).
+- Fail-closed-on-unknown egress: outbound content whose data class can't be positively established *from the bytes* is held for human review, not trusted as public — a tool manifest's declared output class is a verified ceiling, not a skip-flag, so this catches exfiltration to an in-contract host through any tool, manifested or not (`npm run demo:exfil`).
+- Ingest-taint / anti-laundering: a session that has read confidential data and then sends lower-classed content to an external destination is held for review — catching data the model rewrote into benign-looking prose, which no content inspection can see (`npm run demo:breach`, step 7).
+- Content classification: keyword + structured-value detection (Luhn cards, IBAN, SSN, secret prefixes, high-entropy tokens) with a pluggable seam for an embedding/commercial-DLP classifier.
 - Hash-chained, HMAC-keyed evidence ledger with verification tooling and optional external anchoring.
 - Agent SDK (authorize-then-execute, fail-closed on block/approval and on gateway error).
 - HTTPS `CONNECT` egress proxy + kernel lockdown (K8s NetworkPolicy or Docker internal network) — destination-level containment an injected agent can't route around.
@@ -79,10 +81,14 @@ In another terminal:
 
 ```bash
 npm run check
+npm test
 node tools/smoke-test.js
 node examples/malicious-diligence-agent.js
 node tools/verify-ledger.js
 node tools/config-check.js
+node tools/gen-keys.js            # generate an Ed25519 signing keypair
+node tools/lockdown-selftest.js  # is egress actually contained?
+npm run bench                    # persistence hot-path throughput
 npm run pilot:local
 ```
 
@@ -253,4 +259,6 @@ See [config/production.env.example](config/production.env.example), [k8s](k8s), 
 
 ScopeZero is an early product implementation: a runnable gateway, policy engine, evidence ledger, MCP proxy, SDK, auth layer, deployment scaffold, OpenAPI contract, observability surface, and automated tests.
 
-Before real customer production data, connect a real IdP, managed Postgres, enterprise SIEM, OTLP collector, secrets vault, distributed rate limiter, image signing, SBOM/dependency scanning, and external security testing.
+In production the gateway **fails closed at boot** (`src/startupGate.js`): it refuses to start without an explicit Ed25519 signing private key (`node tools/gen-keys.js`), a non-default ledger secret, a declared egress lockdown (`SCOPEZERO_EGRESS_LOCKDOWN=k8s|docker`), auth required, and dev tokens off. Signing keys rotate via a `kid`-stamped keyset (`SCOPEZERO_SIGNING_PUBLIC_KEYS`). CI runs dependency audit + CycloneDX SBOM + keyless image signing; benchmarks (`BENCHMARKS.md`) gate performance.
+
+Still external before real customer production data: a real IdP (OIDC/JWKS path is implemented and tested), managed Postgres, enterprise SIEM, OTLP collector, secrets vault, a distributed rate limiter, a target registry for image signing, and an external security audit.

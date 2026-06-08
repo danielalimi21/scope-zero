@@ -51,11 +51,13 @@ The signed authorization token. Every tool call must reference an active capsule
   "allowed_data_classes": ["public", "internal", "confidential"],
   "action_contracts": [...],
   "expires_at": "2025-06-02T00:00:00Z",
-  "signature": "<hmac-sha256>"
+  "signature": "sz2.<ed25519-signature-base64>"
 }
 ```
 
-Capsules are **HMAC-SHA256 signed** (`SCOPEZERO_SIGNING_SECRET`). The runtime verifies the signature and expiry on every request. A tampered or expired capsule forces a `block` verdict regardless of policy.
+Capsules are **Ed25519-signed** (`src/crypto.js`, `src/capsules.js`). The private key signs at the gateway; verifiers — the CONNECT proxy, an external auditor — hold only the public key and can confirm authenticity without the power to forge. In production set `SCOPEZERO_SIGNING_PRIVATE_KEY` (PEM) so the key material never leaves the gateway; in dev/tests the keypair is derived deterministically from the shared secret so a single secret works end to end. The runtime verifies the signature and expiry on every request. A tampered or expired capsule forces a `block` verdict regardless of policy.
+
+**Key rotation:** every capsule and cert is stamped with a `kid` (key fingerprint). The runtime verifies against a **keyset** — the current public key plus any retired public keys listed in `SCOPEZERO_SIGNING_PUBLIC_KEYS` — so rotating the signing key keeps live artifacts verifying until they expire. Generate a keypair with `node tools/gen-keys.js`.
 
 ### 2. Policy Engine (`src/policyEngine.js`)
 Pure function: `evaluatePolicy(request, mission, agent, policy, ...) → verdict`
@@ -70,13 +72,36 @@ it routes to a human instead of silently deciding.
 
 Notable controls:
 - **Fail-closed on unknown egress** — outbound content whose data class can't be
-  positively established (keyword classifier found nothing, no tool manifest
-  declares the output class) is held for human review rather than trusted as
-  public. This is the control that catches exfiltration to an *in-contract* host,
-  which the host-only proxy cannot see.
+  positively established *from the bytes* is held for human review rather than
+  trusted as public. "Positively established" is decided by `classifyPayload`
+  shape analysis (`src/sensitiveData.js`): a keyword hit establishes sensitivity,
+  and at level 1 the class is established as public only when the payload has no
+  bulk/tabular/encoded/large shape. A tool manifest's `data_out_classes` is a
+  **verified ceiling, not a skip-flag** — if the payload classifies above the
+  declared output class, the manifest is contradicted by the bytes and the call
+  escalates. This is the control that catches exfiltration to an *in-contract*
+  host through any tool (the host-only proxy cannot see it), and it cannot be
+  dodged by routing the dump through a tool whose manifest claims "public output".
+  Heuristic, not DLP: it catches bulk/encoded dumps, not low-volume values
+  laundered inside prose.
 - **Manifest-or-escalate** — any mutating/high-impact operation with no
   authoritative tool manifest is escalated, because the operation is otherwise
   whatever the agent declared it to be.
+- **Ingest-taint / anti-laundering** — the gateway tracks a per-session
+  high-water mark of the most sensitive class the session has been exposed to
+  (`src/store.js` `sessions.ingested_class_rank`, classified from both the
+  outbound payload and the inbound context). When a session that ingested
+  `confidential`+ data later sends *lower-classed* content to an external
+  destination, the egress routes to a human — because content laundered into
+  benign-looking prose can't be caught by inspecting the outbound bytes, only by
+  what the session has touched. The honest limit: this sees only material that
+  passes through the gateway; a tool result returned straight to the agent and
+  never shown to ScopeZero isn't tainted.
+- **Value-shape classification + pluggable classifier** — `classifyPayload`
+  (`src/sensitiveData.js`) flags sensitive *values* by structure (Luhn cards,
+  IBAN, SSN, secret prefixes, high-entropy tokens) with no keyword present, and a
+  `classifierResolver` seam lets an embedding/commercial-DLP classifier augment
+  the regex default (it can only raise the class, never lower it).
 
 Decisions compose (the strongest verdict wins), not first-rule-wins. Output: `{ decision, risk_score, risk_contribution, reasons[], controls[], matched_contract_id, safe_to_execute }`.
 
@@ -84,20 +109,24 @@ Decisions compose (the strongest verdict wins), not first-rule-wins. Output: `{ 
 Full evaluation sequence per call:
 
 ```
-1. Look up policy, agent, mission from store
-2. Classify payload (data sensitivity)
-3. Detect prompt injection
-4. Describe action (tool manifest resolution or inference)
-5. Evaluate mission alignment (deterministic, server-side)
-6. Check decision cache (SHA-256 keyed, configurable TTL)
-7. Run policy engine  →  verdict
-8. Agent certificate verification (if cert_id provided)
-9. Behavioral anomaly detection  →  risk_delta applied to verdict
-10. Update behavior profile in store
-11. Update session risk budget
-12. If verdict = "approval": create approval record, fire Slack notification
-13. Append evidence to hash-chained ledger
-14. Record decision metrics
+ 1. Look up policy, agent, mission from store
+ 2. Read prior session risk + session ingest-taint high-water mark
+ 3. Classify payload — keyword + structured-value (Luhn/IBAN/SSN/secret-prefix/
+    entropy) + byte-shape; merge optional external classifier (ceiling-raiser)
+ 4. Classify inbound context (retrieved docs / prior tool output) → ingest rank
+ 5. Detect prompt influence (advisory)
+ 6. Describe action (tool manifest resolution or inference)
+ 7. Evaluate mission alignment (deterministic, server-side, advisory)
+ 8. Check decision cache (SHA-256 keyed on classification, taint, context, TTL)
+ 9. Run policy engine (with prior session taint)  →  verdict
+10. Agent certificate verification (if cert_id provided)
+11. Behavioral anomaly detection  →  risk_delta applied to verdict
+12. Update behavior profile in store
+13. Update session risk budget
+14. Raise session ingest-taint high-water mark (after the decision)
+15. If verdict = "approval": create approval record, fire Slack notification
+16. Append evidence to hash-chained ledger
+17. Record decision metrics
 ```
 
 ### 4. Ledger (`src/ledger.js`)
@@ -121,7 +150,7 @@ SQLite via `node:sqlite` (`DatabaseSync`). Core entities live in a JSON blob (`s
 State / tables:
 - `tenants`, `agents`, `missions`, `approvals`, `policies`, `policy_versions` — core entities (blob + mirror tables)
 - `behavior_profiles` (table) — per `tenant:agent` behavioral baseline, per-row upsert
-- `sessions` (table) — risk budget per `tenant:session`, atomic increment capped at 100
+- `sessions` (table) — per `tenant:session`: risk budget (atomic increment capped at 100) and `ingested_class_rank` (monotonic ingest-taint high-water mark, atomic MAX)
 - `metrics` (table) — global decision counters, atomic increment
 - `mcp_servers`, `agent_certs` — MCP trust registry, issued identity certificates
 
@@ -207,7 +236,7 @@ Pre-seeded well-known servers: GitHub MCP Server (verified), MCP Filesystem/Post
 ## Agent Identity Certificates (`src/agentCert.js`)
 Cryptographic identity bound to a registered agent at deployment time.
 
-**Structure:** `cert_id`, `version`, `tenant_id`, `agent_id`, `capabilities.allowed_tools`, `issued_at`, `expires_at` (default 90 days), `fingerprint` (SHA-256 of body), `signature` (HMAC-SHA256 over `fingerprint:agent_id:tenant_id:expires_at`).
+**Structure:** `cert_id`, `version`, `tenant_id`, `agent_id`, `capabilities.allowed_tools`, `issued_at`, `expires_at` (default 90 days), `fingerprint` (SHA-256 of body), `signature` (Ed25519 over `fingerprint:agent_id:tenant_id:expires_at`, verified with the public key).
 
 **Verification in `evaluateToolCall`:** if `input.agent_cert_id` is present, the runtime verifies signature, expiry, revocation status, and identity match. Result written to `verdict.cert_verification`. Invalid cert + `policy.require_agent_cert = true` → hard block. Valid cert → `agent_cert_verified` added to `verdict.controls`.
 
@@ -235,7 +264,7 @@ Evidence pulled live from the ledger and store metrics. Renders as HTML with pag
 
 ---
 
-## API Surface (44 routes)
+## API Surface (45 routes)
 
 | Area | Key endpoints |
 |---|---|
@@ -266,8 +295,9 @@ Agent → POST /v1/tool-calls
 Runtime:
   1. getPolicy(tenant_id)          → policy object
   2. getAgent(tenant_id, agent_id) → agent record
-  3. getMission(mission_id)        → capsule (HMAC verified)
-  4. classifyPayload(payload)      → { label: "confidential", findings: [...] }
+  3. getMission(mission_id)        → capsule (Ed25519 verified)
+  4. classifyPayload(payload)      → { label: "confidential", findings: [...],
+                                       established: true, egress_shape: null }
   5. detectPromptInfluence(context)→ { influenced: false }
   6. describeActionRequest(...)    → { tool, operation: "external_send",
                                        action_type: "external_send",
@@ -295,10 +325,33 @@ Response:
 
 ---
 
+## Production Hardening (fail-closed boot)
+
+`src/startupGate.js` runs before the gateway starts. In `NODE_ENV=production` it
+**refuses to boot** when a security-critical setting is missing, instead of
+silently using a dev default:
+
+- `SCOPEZERO_SIGNING_PRIVATE_KEY` unset → fatal (no deriving the signing key from
+  a shared secret in prod).
+- `SCOPEZERO_SIGNING_SECRET` missing/default → fatal (it keys the ledger chain).
+- `SCOPEZERO_EGRESS_LOCKDOWN` not `k8s`/`docker` → fatal (declare the kernel
+  egress block; verify it with `node tools/lockdown-selftest.js`, which opens a
+  raw off-path socket and reports contained/open).
+- `SCOPEZERO_REQUIRE_AUTH != true` or `SCOPEZERO_ALLOW_DEV_TOKEN != false` → fatal.
+
+`GET /v1/ready` reports posture live: `egress_lockdown`, `require_proxy_path`,
+`signing_key_explicit`, `signing_kid`. Optional `SCOPEZERO_REQUIRE_PROXY_PATH`
+makes the gateway reject tool calls that didn't traverse the enforced ingress
+(catches a skipped SDK/proxy; the kernel lockdown still owns raw-socket egress).
+
+Supply chain: CI (`.github/workflows/scopezero-ci.yml`) runs `npm run audit`
+(high+ fails the build), generates a CycloneDX SBOM, and has a keyless-cosign
+image-signing job. Performance is gated by the benchmarks (see `BENCHMARKS.md`).
+
 ## Tech Stack
 - **Runtime:** Node.js ES modules, `node --test` (no external test framework)
 - **Storage:** SQLite (`node:sqlite`, `DatabaseSync`) local; Postgres with RLS in production
 - **Crypto:** `node:crypto` — Ed25519 for mission-capsule and agent-cert signatures (private key signs, public key verifies and is safe to distribute; `SCOPEZERO_SIGNING_PRIVATE_KEY` in prod, derived from the shared secret in dev), HMAC-SHA256 for the keyed ledger chain (constant-time comparison), SHA-256 for fingerprints
 - **Auth:** JWT (HS256 pinned / RS256 OIDC), dev token endpoint, OIDC/JWKS support
-- **Tests:** 192 tests, 0 failures
+- **Tests:** 227 tests, 0 failures
 - **No runtime dependencies** beyond Node.js builtins for the core gateway

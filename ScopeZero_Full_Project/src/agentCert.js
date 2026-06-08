@@ -1,4 +1,4 @@
-import { createId, ed25519Sign, ed25519Verify, nowIso, sha256, stableStringify, timingSafeEqualStr } from "./crypto.js";
+import { createId, ed25519Sign, ed25519VerifyWithKeyset, ed25519Verify, keyFingerprint, nowIso, sha256, stableStringify, timingSafeEqualStr } from "./crypto.js";
 
 const CERT_VERSION = "scopezero.agent.cert.v1";
 export const DEFAULT_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
@@ -20,7 +20,8 @@ export function issueAgentCertificate(agent, signingKey, { ttlMs = DEFAULT_TTL_M
       allowed_tools: agent.allowed_tools || [],
       max_delegation_depth: agent.max_delegation_depth ?? 1,
       environments: [agent.environment || "production"]
-    }
+    },
+    kid: keyFingerprint(signingKey)
   };
 
   const fingerprint = sha256(stableStringify(body));
@@ -57,7 +58,11 @@ export function verifyAgentCertificate(cert, verifyKey) {
   }
 
   const signedMessage = certSigningMessage(fingerprint, cert.agent_id, cert.tenant_id, cert.expires_at);
-  if (!ed25519Verify(verifyKey, signedMessage, signature)) {
+  // verifyKey may be a single key or a keyset array (for rotation).
+  const signatureValid = Array.isArray(verifyKey)
+    ? ed25519VerifyWithKeyset(verifyKey, signedMessage, signature, cert.kid) !== null
+    : ed25519Verify(verifyKey, signedMessage, signature);
+  if (!signatureValid) {
     return { valid: false, code: "cert-signature-invalid", message: "Certificate signature verification failed." };
   }
 

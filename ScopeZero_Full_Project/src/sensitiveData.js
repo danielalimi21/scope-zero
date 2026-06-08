@@ -15,6 +15,24 @@ const FINDERS = [
   { code: "email_address", level: 2, pattern: /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i }
 ];
 
+// Value-shape detectors: fire on the STRUCTURE of a sensitive value, with no
+// topic keyword nearby. This is what closes "a card number / secret / SSN dropped
+// into otherwise-benign prose" — the keyword classifier above is blind to it.
+const SECRET_PREFIX_PATTERNS = [
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bghp_[A-Za-z0-9]{36}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{22,}\b/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+  /\bsk-[A-Za-z0-9]{20,}\b/,
+  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/
+];
+
+const VALUE_FINDERS = [
+  { code: "api_secret", level: 5, detect: (text) => SECRET_PREFIX_PATTERNS.some((re) => re.test(text)) || hasHighEntropyToken(text) },
+  { code: "payment_or_bank", level: 5, detect: (text) => hasLuhnCardNumber(text) || /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/.test(text) },
+  { code: "personal_data", level: 4, detect: (text) => /\b\d{3}-\d{2}-\d{4}\b/.test(text) }
+];
+
 const PROMPT_INFLUENCE_SIGNALS = [
   { code: "instruction_override", weight: 38, pattern: /\b(ignore|forget|disregard|override)\b.{0,40}\b(previous|prior|above|system|developer|policy|instructions?)\b/i },
   { code: "policy_bypass", weight: 42, pattern: /\b(bypass|disable|turn off|remove|ignore)\b.{0,40}\b(policy|guardrails?|safety|authorization|approval|scopezero)\b/i },
@@ -62,11 +80,175 @@ export function classifyPayload(payload = {}) {
     }
   }
 
+  // Value-shape detectors run after the keyword finders so a keyword-free secret,
+  // card number, or SSN is still classified by its structure alone.
+  for (const finder of VALUE_FINDERS) {
+    if (finder.detect(text)) {
+      findings.push(finder.code);
+      level = Math.max(level, finder.level);
+    }
+  }
+
+  // Whether the data class was POSITIVELY established, not merely "no keyword
+  // matched". A keyword hit (level >= 2) positively establishes sensitivity. At
+  // level 1 the class is established as public ONLY when the payload also has no
+  // bulk/tabular/encoded/large shape — because opaque content carrying no trigger
+  // term is an absence of evidence, not evidence of absence. `established` is what
+  // the egress gate trusts; a tool manifest cannot override the bytes here.
+  const egressShape = analyzeEgressShape(payload);
+  const established = level >= 2 ? true : egressShape === null;
+
   return {
     level,
     label: labelForLevel(level),
-    findings: [...new Set(findings)]
+    findings: [...new Set(findings)],
+    egress_shape: egressShape,
+    established
   };
+}
+
+function hasLuhnCardNumber(text) {
+  const candidates = String(text).match(/\b(?:\d[ -]?){13,19}\b/g) || [];
+  return candidates.some((candidate) => {
+    const digits = candidate.replace(/[ -]/g, "");
+    return digits.length >= 13 && digits.length <= 19 && luhnValid(digits);
+  });
+}
+
+function luhnValid(digits) {
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i -= 1) {
+    let value = digits.charCodeAt(i) - 48;
+    if (value < 0 || value > 9) {
+      return false;
+    }
+    if (double) {
+      value *= 2;
+      if (value > 9) value -= 9;
+    }
+    sum += value;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
+// A long, near-random token (high Shannon entropy) that is not a UUID. Catches
+// opaque API keys / session tokens that carry no recognizable prefix. Conservative
+// length + entropy thresholds keep UUIDs and ordinary identifiers from tripping it.
+function hasHighEntropyToken(text) {
+  const tokens = String(text).match(/[A-Za-z0-9+/_-]{40,}/g) || [];
+  return tokens.some((token) => !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(token) && shannonEntropy(token) >= 4.6);
+}
+
+function shannonEntropy(value) {
+  const counts = new Map();
+  for (const char of value) {
+    counts.set(char, (counts.get(char) || 0) + 1);
+  }
+  let entropy = 0;
+  for (const count of counts.values()) {
+    const p = count / value.length;
+    entropy -= p * Math.log2(p);
+  }
+  return entropy;
+}
+
+// Combine the deterministic classifier with an optional external classifier
+// (embedding / model-graded / commercial DLP) plugged in via `classifierResolver`.
+// The merge takes the higher class and unions findings; the external verdict can
+// only RAISE establishment (positively classify), never lower it below what the
+// bytes already established. This is the seam for non-English / semantic coverage
+// the regex classifier can't reach.
+export function mergeClassification(base, external) {
+  if (!external || typeof external.level !== "number") {
+    return base;
+  }
+  const level = Math.max(base.level, external.level);
+  return {
+    level,
+    label: labelForLevel(level),
+    findings: [...new Set([...(base.findings || []), ...(external.findings || [])])],
+    egress_shape: base.egress_shape,
+    established: base.established === true || external.established === true || external.level >= 2,
+    classifier_sources: [...new Set(["deterministic", ...(external.source ? [external.source] : ["external"])])]
+  };
+}
+
+// ── Outbound-shape analysis ──────────────────────────────────────────────────
+// Shape detection, NOT DLP: it asks "could this be a data dump?", not "what
+// classification is this?". The keyword classifier is blind to sensitive content
+// that carries no trigger term (raw tables, source code, opaque dumps, encoded
+// blobs). For egress we must know whether a "public" verdict is a positive
+// establishment of the class or merely an absence of evidence — so content with a
+// bulk/tabular/encoded/large shape is treated as class-not-established regardless
+// of what a tool manifest declares the tool emits. Thresholds are deliberately
+// conservative so short status strings and single records stay autonomous.
+function analyzeEgressShape(payload) {
+  if (payload == null) {
+    return null;
+  }
+  const strings = typeof payload === "string" ? [payload] : collectStrings(payload);
+  const joined = strings.join("\n");
+
+  // Bulk array of records in the structured payload (e.g. { rows: [...] }).
+  if (Array.isArray(payload)) {
+    if (payload.length >= 5) return "bulk_records";
+  } else if (typeof payload === "object") {
+    for (const value of Object.values(payload)) {
+      if (Array.isArray(value) && value.length >= 5) return "bulk_records";
+    }
+  }
+
+  // Tabular dump: 3+ delimited rows with a uniform field count — columns, not prose.
+  if (strings.some(isTabularDump)) {
+    return "tabular_dump";
+  }
+
+  // Encoded/opaque blob: a long base64 or hex run with no whitespace.
+  if (/[A-Za-z0-9+/]{120,}={0,2}/.test(joined) || /\b[0-9a-fA-F]{96,}\b/.test(joined)) {
+    return "encoded_blob";
+  }
+
+  // Sheer volume: a large opaque body crossing a boundary is not "positively public".
+  if (joined.length >= 4096) {
+    return "large_body";
+  }
+
+  return null;
+}
+
+function collectStrings(value, out = []) {
+  if (value == null) {
+    return out;
+  }
+  if (typeof value === "string") {
+    out.push(value);
+  } else if (Array.isArray(value)) {
+    value.forEach((item) => collectStrings(item, out));
+  } else if (typeof value === "object") {
+    Object.values(value).forEach((item) => collectStrings(item, out));
+  } else {
+    out.push(String(value));
+  }
+  return out;
+}
+
+function isTabularDump(text) {
+  const lines = String(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length < 3) {
+    return false;
+  }
+  const fieldCounts = lines
+    .map((line) => Math.max((line.match(/,/g) || []).length, (line.match(/\t/g) || []).length, (line.match(/\|/g) || []).length))
+    .filter((count) => count >= 1);
+  if (fieldCounts.length < 3 || fieldCounts.length < Math.ceil(lines.length * 0.6)) {
+    return false;
+  }
+  const sorted = [...fieldCounts].sort((a, b) => a - b);
+  const mode = sorted[Math.floor(sorted.length / 2)];
+  const uniform = fieldCounts.filter((count) => count === mode).length >= Math.ceil(fieldCounts.length * 0.8);
+  return uniform;
 }
 
 export function detectPromptInfluence(context = {}, policy = {}) {

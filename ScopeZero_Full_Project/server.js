@@ -17,6 +17,7 @@ import { generateComplianceReport } from "./src/complianceReport.js";
 import { parseProxyAuth, parseConnectTarget, evaluateProxyConnect, buildDeploymentLockdown } from "./src/proxyEnforcer.js";
 import { createMcpRefreshSchedulerFromEnv } from "./src/mcpRefreshScheduler.js";
 import { handleValidateAdmission, handleMutateAdmission, generateFullEnforcementManifests } from "./src/k8sAdmission.js";
+import { assessStartupReadiness } from "./src/startupGate.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,6 +37,23 @@ const PUBLIC_BASE_URL = process.env.SCOPEZERO_PUBLIC_BASE_URL || `http://localho
 const STORE_PROVIDER = process.env.SCOPEZERO_STORE || "sqlite";
 const OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "";
 const SECRETS_PROVIDER = process.env.SCOPEZERO_SECRETS_PROVIDER || "local";
+
+// Fail-closed boot: in production, refuse to start when a security-critical
+// setting is missing rather than silently using a dev default.
+const startup = assessStartupReadiness(process.env);
+for (const warning of startup.warnings) {
+  console.warn(`ScopeZero startup warning: ${warning}`);
+}
+if (!startup.ok) {
+  console.error("ScopeZero refused to start — fatal configuration errors:");
+  for (const fatal of startup.fatal) {
+    console.error(`- ${fatal}`);
+  }
+  process.exit(1);
+}
+
+const REQUIRE_PROXY_PATH = process.env.SCOPEZERO_REQUIRE_PROXY_PATH === "true";
+const PROXY_PATH_MARKER = process.env.SCOPEZERO_PROXY_PATH_MARKER || "";
 
 const registry = new ConnectorRegistry();
 const approvalNotifier = createApprovalNotifierFromEnv(process.env);
@@ -215,6 +233,16 @@ async function handleApi(req, res, url) {
       postgres_configured: STORE_PROVIDER === "postgres" && Boolean(process.env.DATABASE_URL),
       otel_configured: Boolean(OTEL_EXPORTER_OTLP_ENDPOINT),
       secrets_provider: SECRETS_PROVIDER,
+      // Egress containment posture. "none" means the bare-SDK tier is honor-system:
+      // an agent that ignores HTTP_PROXY can reach the network directly. Set
+      // SCOPEZERO_EGRESS_LOCKDOWN=k8s|docker once the kernel lockdown is applied.
+      egress_lockdown: ["k8s", "docker"].includes(String(process.env.SCOPEZERO_EGRESS_LOCKDOWN || "none").toLowerCase())
+        ? String(process.env.SCOPEZERO_EGRESS_LOCKDOWN).toLowerCase()
+        : "none",
+      require_proxy_path: REQUIRE_PROXY_PATH,
+      // Explicit private key configured vs derived from the shared secret (dev).
+      signing_key_explicit: Boolean(process.env.SCOPEZERO_SIGNING_PRIVATE_KEY),
+      signing_kid: runtime.signingKid,
       timestamp: new Date().toISOString()
     });
   }
@@ -566,6 +594,17 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const tenantId = enforceTenant(principal, body.tenant_id);
     auth.authorize(principal, "tool:evaluate", tenantId);
+    // Require-proxy-path: when enabled, the enforced ingress (SDK/proxy) stamps a
+    // shared marker header. Reject calls that didn't traverse it. Catches an agent
+    // that skipped the configured path to reach the gateway directly — it does NOT
+    // catch a raw socket that skips the gateway entirely (that's the kernel
+    // egress lockdown's job).
+    if (REQUIRE_PROXY_PATH) {
+      const presented = req.headers["x-scopezero-proxy-path"] || "";
+      if (!PROXY_PATH_MARKER || presented !== PROXY_PATH_MARKER) {
+        return sendJson(res, 403, { error: { code: "proxy_path_required", message: "Tool call did not traverse the enforced ingress path (missing/invalid X-ScopeZero-Proxy-Path)." } });
+      }
+    }
     return sendJson(res, 200, await runtime.evaluateToolCall({ ...body, tenant_id: tenantId, requested_by: auditPrincipal(principal) }));
   }
 

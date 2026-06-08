@@ -127,13 +127,38 @@ export class PostgresStore extends Store {
     });
   }
 
+  async getSessionIngestedClass(sessionId, tenantId = "tenant_contoso") {
+    return this.withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        "SELECT ingested_class_rank FROM sessions WHERE tenant_id = $1 AND session_id = $2",
+        [tenantId, sessionId]
+      );
+      return result.rows[0]?.ingested_class_rank || 0;
+    });
+  }
+
+  async updateSessionIngestedClass(sessionId, classRank, tenantId = "tenant_contoso") {
+    const rank = Number(classRank || 0);
+    return this.withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        `INSERT INTO sessions (tenant_id, session_id, ingested_class_rank, updated_at)
+         VALUES ($1, $2, $3, now())
+         ON CONFLICT (tenant_id, session_id)
+         DO UPDATE SET ingested_class_rank = GREATEST(sessions.ingested_class_rank, $3), updated_at = now()
+         RETURNING ingested_class_rank`,
+        [tenantId, sessionId, rank]
+      );
+      return result.rows[0].ingested_class_rank;
+    });
+  }
+
   async getAllSessions() {
     return this.withTenant("*", async (client) => {
-      const result = await client.query("SELECT tenant_id, session_id, risk_consumed FROM sessions");
+      const result = await client.query("SELECT tenant_id, session_id, risk_consumed, ingested_class_rank FROM sessions");
       return Object.fromEntries(
         result.rows.map((row) => [
           `${row.tenant_id}:${row.session_id}`,
-          { tenant_id: row.tenant_id, session_id: row.session_id, risk_consumed: row.risk_consumed }
+          { tenant_id: row.tenant_id, session_id: row.session_id, risk_consumed: row.risk_consumed, ingested_class_rank: row.ingested_class_rank }
         ])
       );
     });
@@ -231,9 +256,11 @@ export class PostgresStore extends Store {
         tenant_id TEXT NOT NULL,
         session_id TEXT NOT NULL,
         risk_consumed DOUBLE PRECISION NOT NULL DEFAULT 0,
+        ingested_class_rank DOUBLE PRECISION NOT NULL DEFAULT 0,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (tenant_id, session_id)
       );
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ingested_class_rank DOUBLE PRECISION NOT NULL DEFAULT 0;
       CREATE TABLE IF NOT EXISTS metrics (
         name TEXT PRIMARY KEY,
         value BIGINT NOT NULL DEFAULT 0

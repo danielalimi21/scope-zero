@@ -16,7 +16,7 @@ Every "covered" claim points at a concrete control so it can be verified, not ta
 | # | Risk | Coverage | ScopeZero control |
 |---|------|----------|-------------------|
 | LLM01 | Prompt Injection | **Strong by containment, not by detection** | We assume injection *succeeds*. The strength is that the resulting **action** is contained by the deterministic contract gates and the kernel egress block regardless of whether detection fired. Detection itself is best-effort and advisory: an obfuscation-normalizing prompt-influence heuristic (`src/sensitiveData.js`; homoglyph/spacing/leet/base64 — passes the adversarial corpus in `tests/prompt-injection-corpus.test.js`, but a denylist, so novel phrasings and other languages will slip it) → `quarantine_context`; plus a keyword-overlap intent-drift screen (not semantic understanding) → human approval. Neither signal is sold as the control. |
-| LLM02 | Sensitive Information Disclosure | **Strong** | Server-side data classification + `sensitive_egress_guard`, `redact` verdict, and mission-bound destination contracts; HTTPS egress allow-listed at the proxy + kernel (K8s NetworkPolicy), DNS pinned to the cluster resolver. |
+| LLM02 | Sensitive Information Disclosure | **Strong** | Server-side data classification (keyword + structured value detection: Luhn cards, IBAN, SSN, secret prefixes, high-entropy tokens; pluggable external classifier seam) + `sensitive_egress_guard`, `redact` verdict, and mission-bound destination contracts. Egress whose class can't be positively established from the bytes is held (`unverified-egress-class`), and a manifest's declared output class is a verified ceiling, not a skip. **Anti-laundering:** a session that ingested confidential data and then sends lower-classed content externally is held (`tainted-session-egress`) — catching data the model rewrote into benign-looking prose, which no content inspection can see. HTTPS egress allow-listed at the proxy + kernel (K8s NetworkPolicy), DNS pinned to the cluster resolver. *Limit:* taint only covers material the gateway actually sees (payload or declared context). |
 | LLM03 | Supply Chain | **Partial** | MCP trust registry with OSV CVE signals + scheduled refresh + trust decay (`src/mcpTrustRegistry.js`); agent identity certificates. Covers MCP-server provenance/CVE; does not scan model weights. |
 | LLM04 | Data and Model Poisoning | **Out of scope** | Training-time concern. ScopeZero is runtime; the hash-chained ledger provides forensic evidence after the fact. |
 | LLM05 | Improper Output Handling | **Partial** | Vendor-neutral action contracts gate `(tool, operation, data_class, destination)`; `redact` and approval gates on high-impact actions. Downstream sanitization of model output in the consuming app remains the app's responsibility. |
@@ -45,3 +45,15 @@ influenced, the agent's *actions* are bound to a signed mission, contained
 fail-closed at the kernel when it tries to reach the network, and provable in a
 tamper-evident ledger. That is the slice of the AI-security problem ScopeZero
 owns, and within it the coverage above is real and test-backed.
+
+The egress controls reason about content two ways: the *bytes* (keyword +
+structured-value + shape classification, with a verified manifest ceiling) and
+the *session's exposure* (ingest-taint, for laundering the bytes can't reveal).
+Both are honest about their reach. The bytes classifier is heuristic — a
+low-volume secret laundered into natural prose, or non-English content, needs the
+pluggable external classifier to catch; the regex default will miss it. Ingest-
+taint only sees material that passes through the gateway, so a tool result fed
+straight to the model without ever crossing ScopeZero is invisible to it. And the
+network layer is host-only by design (TLS bodies are opaque to the CONNECT proxy)
+and does not yet block recursive DNS-tunnel exfil — those are a filtering-resolver
+and a TLS-terminating-proxy concern on the roadmap, not claims made here.

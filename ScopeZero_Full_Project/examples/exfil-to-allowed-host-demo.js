@@ -7,9 +7,12 @@
 // this. The ACTION layer can, because it sees the payload before it leaves.
 //
 // This demo proves the split:
-//   - declared, public-classed egress flows automatically (manifested tool);
-//   - opaque content with no established data class, leaving through an
-//     unmanifested tool to the SAME allowed host, is held for human review;
+//   - short, benign content whose class is positively established as public flows
+//     automatically (the legitimate fast path, through a manifested tool);
+//   - opaque content with no positively-established data class, leaving for the
+//     SAME allowed host, is held for human review — whether it goes through an
+//     unmanifested tool OR a tool whose manifest declares "public output", because
+//     the gate checks the bytes, not the tool's self-declaration (step 3 and 3b);
 //   - the proxy, asked about that same host, allows it — which is exactly why
 //     the action layer has to be the one that catches the leak.
 //
@@ -123,6 +126,25 @@ async function main() {
     "opaque, unclassifiable egress to an in-contract host is held for review — not auto-allowed",
     heldForReview && rightReason,
     `decision=${exfil.decision}; reasons: ${(exfil.verdict?.reasons || []).map((r) => r.code).join(", ")}`
+  );
+
+  // ── The losing path: the same payload through the MANIFESTED tool ────────────
+  // A prompt-injected agent picks the tool. If the egress gate trusted the tool's
+  // self-declared manifest, the agent would just route the same opaque dump through
+  // github.sync (manifest says "public output") instead of github.gist. The gate
+  // checks the BYTES, not the manifest, so tool selection cannot dodge it.
+  step("3b. The agent routes the SAME dump through the manifested 'public' tool to dodge the check");
+  const exfilViaManifest = await runtime.evaluateToolCall({
+    tenant_id: TENANT, agent_id: AGENT, mission_id: capsule.id,
+    tool: "github.sync", action: "Write public build status", operation: "write",
+    payload: { content: "account,balance\n4012-8888,182240.55\n4012-9001,93517.10\n4012-7777,540883.00" },
+    destination: { type: "url", address: ALLOWED_HOST }
+  });
+  check(
+    "the manifest declaring 'public output' does NOT skip the check — same bytes, still held",
+    exfilViaManifest.decision !== "allow" &&
+      (exfilViaManifest.verdict?.reasons || []).some((r) => r.code === "unverified-egress-class"),
+    `decision=${exfilViaManifest.decision}; reasons: ${(exfilViaManifest.verdict?.reasons || []).map((r) => r.code).join(", ")}`
   );
 
   // ── Contrast: the network layer cannot see this ─────────────────────────────

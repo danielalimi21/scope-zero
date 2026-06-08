@@ -1,4 +1,4 @@
-import { createId, ed25519Sign, ed25519Verify, nowIso, stableStringify } from "./crypto.js";
+import { createId, ed25519Sign, ed25519Verify, ed25519VerifyWithKeyset, keyFingerprint, nowIso, stableStringify } from "./crypto.js";
 import { buildDefaultActionContracts } from "./actionAuthorization.js";
 
 export function createMissionCapsule(input, signingKey) {
@@ -33,9 +33,11 @@ export function createMissionCapsule(input, signingKey) {
 }
 
 // sz2 = Ed25519 signature over the canonical (key-sorted) unsigned capsule.
-// signingKey may be a private KeyObject or a shared-secret string (derived).
+// signingKey may be a private KeyObject or a shared-secret string (derived). The
+// signing key's `kid` is stamped into the (signed) body so a verifier with a
+// keyset can pick the right key and so a rotated-out key's capsules keep verifying.
 export function signCapsule(capsule, signingKey) {
-  const unsigned = { ...capsule };
+  const unsigned = { ...capsule, kid: capsule.kid || keyFingerprint(signingKey) };
   delete unsigned.signature;
   return {
     ...unsigned,
@@ -43,8 +45,9 @@ export function signCapsule(capsule, signingKey) {
   };
 }
 
-// verifyKey may be a public KeyObject or a shared-secret string (derived). A
-// verifier holding only the public key can confirm authenticity but cannot forge.
+// verifyKey may be a single public KeyObject / shared-secret string, OR a keyset
+// array of { kid, key } (from buildVerificationKeyset) to support rotation. A
+// verifier holding only public keys can confirm authenticity but cannot forge.
 export function verifyMissionCapsule(capsule, verifyKey) {
   if (!capsule || typeof capsule.signature !== "string") {
     return false;
@@ -54,7 +57,12 @@ export function verifyMissionCapsule(capsule, verifyKey) {
   }
   const unsigned = { ...capsule };
   delete unsigned.signature;
-  return ed25519Verify(verifyKey, stableStringify(unsigned), capsule.signature.slice(4));
+  const message = stableStringify(unsigned);
+  const signature = capsule.signature.slice(4);
+  if (Array.isArray(verifyKey)) {
+    return ed25519VerifyWithKeyset(verifyKey, message, signature, capsule.kid) !== null;
+  }
+  return ed25519Verify(verifyKey, message, signature);
 }
 
 export function isExpired(capsule) {

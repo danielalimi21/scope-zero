@@ -253,3 +253,133 @@ test("an in-contract external read with no payload stays an automatic allow", ()
 
   assert.equal(verdict.decision, "allow");
 });
+
+// Regression: the manifest must be a VERIFIED CEILING, never a skip-flag. A
+// prompt-injected agent picks the tool, so it would otherwise route opaque data
+// through the tool whose manifest declares the friendliest output class. The same
+// opaque payload that is held when sent through an unmanifested tool must still be
+// held when sent through a tool whose manifest declares public output.
+const manifestEgressMission = {
+  id: "mission_manifest_egress",
+  status: "active",
+  allowed_tools: ["github.sync"],
+  allowed_data_classes: ["public", "internal"],
+  allowed_destinations: ["api.github.com"],
+  action_contracts: [
+    { id: "gh-sync", tools: ["github.sync"], operations: ["write"], data_classes: ["public", "internal"], destinations: ["api.github.com"], effect: "allow" }
+  ]
+};
+
+function manifestEgressRequest(payload) {
+  return {
+    tool: "github.sync",
+    action: "Write public build status",
+    operation: "write",
+    payload,
+    action_descriptor: {
+      schema: "scopezero.action_authorization.v1",
+      tool: "github.sync",
+      action: "Write public build status",
+      operation: "write",
+      action_type: "write",
+      data_class: "public",
+      data_rank: 1,
+      destination: { type: "url", address: "api.github.com", external: true },
+      // A manifest that declares the tool only ever emits public data. This used to
+      // make the egress gate skip itself — the documented bypass.
+      tool_manifest: { tool_id: "github.sync", operation: "write", action_type: "write", data_out_classes: ["public"], mutating: true }
+    }
+  };
+}
+
+test("opaque egress through a tool whose manifest declares public output is still held for review (manifest is not a skip-flag)", () => {
+  const verdict = evaluatePolicy({
+    request: manifestEgressRequest({ content: "account,balance\n4012-8888,182240.55\n4012-9001,93517.10\n4012-7777,540883.00" }),
+    mission: manifestEgressMission,
+    agent: { ...agent, allowed_tools: ["github.sync"] },
+    policy,
+    // Bulk/tabular shape ⇒ class not positively established as public from the bytes.
+    classification: { level: 1, label: "public", findings: [], egress_shape: "tabular_dump", established: false },
+    promptInfluence: { influenced: false, origin: "unknown", matched_patterns: [] },
+    missionAlignment: { aligned: true, score: 0.5, source: "server_deterministic", reasons: [] },
+    externalDestination: true,
+    currentSessionRisk: 0
+  });
+
+  assert.equal(verdict.decision, "approval");
+  assert.equal(verdict.safe_to_execute, false);
+  assert.ok(verdict.reasons.some((reason) => reason.code === "unverified-egress-class"));
+});
+
+test("payload that classifies above the tool's declared output ceiling is held for review (ceiling verified against bytes)", () => {
+  const verdict = evaluatePolicy({
+    request: manifestEgressRequest({ summary: "loop in vp.strategy@contoso.example on the close" }),
+    mission: manifestEgressMission,
+    agent: { ...agent, allowed_tools: ["github.sync"] },
+    policy,
+    // Internal (level 2) content leaving through a tool the manifest says emits only public.
+    classification: { level: 2, label: "internal", findings: ["email_address"], egress_shape: null, established: true },
+    promptInfluence: { influenced: false, origin: "unknown", matched_patterns: [] },
+    missionAlignment: { aligned: true, score: 0.5, source: "server_deterministic", reasons: [] },
+    externalDestination: true,
+    currentSessionRisk: 0
+  });
+
+  assert.equal(verdict.decision, "approval");
+  assert.ok(verdict.reasons.some((reason) => reason.code === "manifest-output-class-exceeded"));
+});
+
+test("benign short content through a public-manifest tool stays an automatic allow (fast path preserved)", () => {
+  const verdict = evaluatePolicy({
+    request: manifestEgressRequest({ summary: "Nightly issue sync complete." }),
+    mission: manifestEgressMission,
+    agent: { ...agent, allowed_tools: ["github.sync"] },
+    policy,
+    // Short prose, no bulk/opaque shape ⇒ class positively established as public.
+    classification: { level: 1, label: "public", findings: [], egress_shape: null, established: true },
+    promptInfluence: { influenced: false, origin: "unknown", matched_patterns: [] },
+    missionAlignment: { aligned: true, score: 0.5, source: "server_deterministic", reasons: [] },
+    externalDestination: true,
+    currentSessionRisk: 0
+  });
+
+  assert.equal(verdict.decision, "allow");
+  assert.equal(verdict.safe_to_execute, true);
+});
+
+test("benign egress is held when the session has ingested more sensitive data (laundering guard)", () => {
+  const verdict = evaluatePolicy({
+    request: manifestEgressRequest({ summary: "Status: review complete, all green." }),
+    mission: manifestEgressMission,
+    agent: { ...agent, allowed_tools: ["github.sync"] },
+    policy,
+    classification: { level: 1, label: "public", findings: [], egress_shape: null, established: true },
+    promptInfluence: { influenced: false, origin: "unknown", matched_patterns: [] },
+    missionAlignment: { aligned: true, score: 0.5, source: "server_deterministic", reasons: [] },
+    externalDestination: true,
+    currentSessionRisk: 0,
+    sessionIngestedClassRank: 4 // session previously read confidential data
+  });
+
+  assert.equal(verdict.decision, "approval");
+  assert.ok(verdict.reasons.some((reason) => reason.code === "tainted-session-egress"));
+});
+
+test("the laundering guard does not fire when egress class matches what the session ingested", () => {
+  const verdict = evaluatePolicy({
+    request: manifestEgressRequest({ summary: "Status: review complete, all green." }),
+    mission: manifestEgressMission,
+    agent: { ...agent, allowed_tools: ["github.sync"] },
+    policy,
+    // Outbound class equals ingested class ⇒ governed by the normal data-class/
+    // destination gates, not the downgrade/launder heuristic.
+    classification: { level: 1, label: "public", findings: [], egress_shape: null, established: true },
+    promptInfluence: { influenced: false, origin: "unknown", matched_patterns: [] },
+    missionAlignment: { aligned: true, score: 0.5, source: "server_deterministic", reasons: [] },
+    externalDestination: true,
+    currentSessionRisk: 0,
+    sessionIngestedClassRank: 1
+  });
+
+  assert.equal(verdict.decision, "allow");
+});

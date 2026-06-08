@@ -70,9 +70,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   tenant_id TEXT NOT NULL,
   session_id TEXT NOT NULL,
   risk_consumed DOUBLE PRECISION NOT NULL DEFAULT 0,
+  ingested_class_rank DOUBLE PRECISION NOT NULL DEFAULT 0,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, session_id)
 );
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ingested_class_rank DOUBLE PRECISION NOT NULL DEFAULT 0;
 
 -- Global aggregate counters (not tenant-scoped); atomic increments.
 CREATE TABLE IF NOT EXISTS metrics (

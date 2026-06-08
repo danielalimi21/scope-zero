@@ -156,6 +156,7 @@ export class Store {
         tenant_id TEXT NOT NULL,
         session_id TEXT NOT NULL,
         risk_consumed REAL NOT NULL DEFAULT 0,
+        ingested_class_rank REAL NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (tenant_id, session_id)
       );
@@ -164,8 +165,18 @@ export class Store {
         value INTEGER NOT NULL DEFAULT 0
       );
       INSERT OR REPLACE INTO scopezero_meta (key, value, updated_at)
-      VALUES ('schema_version', '4', CURRENT_TIMESTAMP);
+      VALUES ('schema_version', '5', CURRENT_TIMESTAMP);
     `);
+    // Additive column for session ingest-taint tracking. CREATE TABLE IF NOT
+    // EXISTS won't add it to a pre-existing sessions table, so add it idempotently.
+    this.ensureColumn("sessions", "ingested_class_rank", "REAL NOT NULL DEFAULT 0");
+  }
+
+  ensureColumn(table, column, definition) {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.some((col) => col.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
   }
 
   loadState() {
@@ -455,6 +466,28 @@ export class Store {
     return row?.risk_consumed || 0;
   }
 
+  // Monotonic per-session high-water mark of the most sensitive data class the
+  // session has been exposed to (payload or context). Drives the laundering guard:
+  // egress is judged against what the session has TOUCHED, not just the outbound
+  // bytes, because laundered content leaves looking benign.
+  async updateSessionIngestedClass(sessionId, classRank, tenantId = "tenant_contoso") {
+    const rank = Number(classRank || 0);
+    this.db
+      .prepare(
+        `INSERT INTO sessions (tenant_id, session_id, ingested_class_rank, updated_at)
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(tenant_id, session_id)
+         DO UPDATE SET ingested_class_rank = MAX(sessions.ingested_class_rank, ?), updated_at = CURRENT_TIMESTAMP`
+      )
+      .run(tenantId, sessionId, rank, rank);
+    return this.getSessionIngestedClass(sessionId, tenantId);
+  }
+
+  getSessionIngestedClass(sessionId, tenantId = "tenant_contoso") {
+    const row = this.db.prepare("SELECT ingested_class_rank FROM sessions WHERE tenant_id = ? AND session_id = ?").get(tenantId, sessionId);
+    return row?.ingested_class_rank || 0;
+  }
+
   getBehaviorProfile(tenantId, agentId) {
     const row = this.db.prepare("SELECT body FROM behavior_profiles WHERE tenant_id = ? AND agent_id = ?").get(tenantId, agentId);
     return row ? JSON.parse(row.body) : null;
@@ -468,9 +501,9 @@ export class Store {
   // `tenant:key` map shape. These are reporting reads, not the hot path.
   getAllSessions() {
     return Object.fromEntries(
-      this.db.prepare("SELECT tenant_id, session_id, risk_consumed FROM sessions").all().map((row) => [
+      this.db.prepare("SELECT tenant_id, session_id, risk_consumed, ingested_class_rank FROM sessions").all().map((row) => [
         `${row.tenant_id}:${row.session_id}`,
-        { tenant_id: row.tenant_id, session_id: row.session_id, risk_consumed: row.risk_consumed }
+        { tenant_id: row.tenant_id, session_id: row.session_id, risk_consumed: row.risk_consumed, ingested_class_rank: row.ingested_class_rank }
       ])
     );
   }

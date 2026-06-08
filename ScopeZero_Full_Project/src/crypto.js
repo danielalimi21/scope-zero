@@ -70,6 +70,49 @@ export function publicKeyToPem(publicKey) {
   return publicKey.export({ type: "spki", format: "pem" }).toString();
 }
 
+// Short, stable id for a key — sha256 of its SPKI DER, first 12 hex. Stamped on
+// capsules/certs as `kid` so a verifier with a keyset can pick the right key, and
+// so a rotated-out key's artifacts still verify while its public key stays in the
+// keyset. Accepts a public/private KeyObject or a shared-secret string.
+export function keyFingerprint(material) {
+  const publicKey = asPublicKey(material);
+  const der = publicKey.export({ type: "spki", format: "der" });
+  return sha256(der).slice(0, 12);
+}
+
+// Build a verification keyset: the current public key plus any retired/rotated
+// public keys (PEM strings) still allowed to verify. Each entry is { kid, key }.
+// Lets a rotation keep verifying live missions signed under the previous key.
+export function buildVerificationKeyset({ current, additionalPublicKeyPems = [] } = {}) {
+  const keyset = [];
+  const seen = new Set();
+  const add = (material) => {
+    if (!material) return;
+    const key = asPublicKey(material);
+    const kid = keyFingerprint(key);
+    if (seen.has(kid)) return;
+    seen.add(kid);
+    keyset.push({ kid, key });
+  };
+  add(current);
+  for (const pem of additionalPublicKeyPems) {
+    add(pem);
+  }
+  return keyset;
+}
+
+// Verify a signature against a keyset. If `kid` is given, try that key first;
+// otherwise (or on miss) try every key. Returns the matching kid or null.
+export function ed25519VerifyWithKeyset(keyset, message, signatureB64, kid = null) {
+  const ordered = kid ? [...keyset].sort((a, b) => (a.kid === kid ? -1 : b.kid === kid ? 1 : 0)) : keyset;
+  for (const entry of ordered) {
+    if (ed25519Verify(entry.key, message, signatureB64)) {
+      return entry.kid;
+    }
+  }
+  return null;
+}
+
 export function ed25519Sign(privateKey, message) {
   return crypto.sign(null, Buffer.from(String(message)), asPrivateKey(privateKey)).toString("base64");
 }

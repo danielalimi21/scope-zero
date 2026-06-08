@@ -27,6 +27,14 @@ if (process.env.NODE_ENV === "production") {
   if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
     warnings.push("OTEL_EXPORTER_OTLP_ENDPOINT should be configured for production traces.");
   }
+  // Without a kernel-level egress lockdown, an agent that ignores the SDK and the
+  // HTTP_PROXY env can open a raw socket straight past the gateway — the bare-SDK
+  // tier is then honor-system. The app can't enforce topology, so make the operator
+  // declare it and flag loudly when it's undeclared.
+  const lockdown = String(process.env.SCOPEZERO_EGRESS_LOCKDOWN || "none").toLowerCase();
+  if (!["k8s", "docker"].includes(lockdown)) {
+    warnings.push("SCOPEZERO_EGRESS_LOCKDOWN is not 'k8s' or 'docker' — agents are contained only if they honor HTTP_PROXY (bare-SDK tier is honor-system). Apply the K8s NetworkPolicy or Docker internal-network lockdown and declare it. See /v1/deployment/lockdown.");
+  }
 }
 
 if (warnings.length) {

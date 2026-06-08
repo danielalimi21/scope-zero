@@ -2,6 +2,8 @@
 
 **ScopeZero authorizes every AI-agent action against a signed, human-delegated mission before it runs — and keeps a tamper-evident record of every decision, so you can prove what your agents did and that it was authorized.**
 
+![ScopeZero containing a hijacked agent — run it yourself in 10s with `npm run demo:breach`](gtm/scopezero-demo.gif)
+
 It sits between AI agents and the tools they use. Before an agent sends email, exports data, opens a ticket, touches cloud permissions, calls an MCP tool, or moves information across a boundary, ScopeZero asks one question:
 
 > Is this specific action authorized by the agent's approved mission?

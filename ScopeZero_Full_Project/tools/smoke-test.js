@@ -64,6 +64,11 @@ const mission = await authed.createMission({
   delegated_by: "security@contoso.example",
   objective: "Draft a safe internal security summary.",
   allowed_tools: ["slack.draft"],
+  // The mission's approved Slack channel must be in the contract (allowed_destinations)
+  // AND declared a public sink — external egress is sealed to review by default, so a
+  // mission both contracts the destination and opts that lane out of the seal.
+  allowed_destinations: ["security-team"],
+  public_egress_destinations: ["security-team"],
   ttl_minutes: 15
 });
 

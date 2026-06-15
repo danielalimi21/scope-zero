@@ -83,7 +83,13 @@ const HOMOGLYPHS = new Map([
 const HOMOGLYPH_RE = new RegExp(`[${[...HOMOGLYPHS.keys()].join("")}]`, "g");
 
 export function classifyPayload(payload = {}) {
-  const text = typeof payload === "string" ? payload : JSON.stringify(payload);
+  const raw = typeof payload === "string" ? payload : JSON.stringify(payload);
+  // Scan the raw bytes AND anything trivially decoded out of them. A base64- or
+  // hex-wrapped credential (e.g. an AWS key encoded to dodge the keyword/prefix
+  // finders) classifies as opaque "public" otherwise: the prompt-influence path
+  // already decodes, so the DLP path must too or the two disagree on the same bytes.
+  const decoded = decodeEmbeddedPayloads(raw);
+  const text = decoded.length ? `${raw}\n${decoded.join("\n")}` : raw;
   const explicit = String(payload.classification || payload.data_classification || "").toLowerCase();
   let level = LEVELS[explicit] || 1;
   const findings = [];
@@ -122,10 +128,14 @@ export function classifyPayload(payload = {}) {
   };
 }
 
+// A 13–19 digit run whose digits may be split by ANY common separator — space,
+// dash, dot, or non-breaking space ("4012.8888.8888.1881", "4012 8888 8888 1881").
+// Luhn validation is the false-positive gate, so the separator set can be liberal
+// without flagging ordinary numbers. Closes dot/space-separated card evasion.
 function hasLuhnCardNumber(text) {
-  const candidates = String(text).match(/\b(?:\d[ -]?){13,19}\b/g) || [];
+  const candidates = String(text).match(/\d(?:[ . -]?\d){12,18}/g) || [];
   return candidates.some((candidate) => {
-    const digits = candidate.replace(/[ -]/g, "");
+    const digits = candidate.replace(/[ . -]/g, "");
     return digits.length >= 13 && digits.length <= 19 && luhnValid(digits);
   });
 }
@@ -390,6 +400,35 @@ function depunctForm(value) {
 
 function denseForm(value) {
   return String(value || "").replace(/[^a-z0-9]+/g, "");
+}
+
+// Decode base64/hex tokens embedded in the payload to printable text, so a
+// credential wrapped in an encoding (under the bulk-blob shape threshold) is still
+// scanned by the finders. Returns only decodings that look like text, capped to
+// keep classification cheap. Used by the DLP classifier, mirroring the decode the
+// prompt-influence path already does — the two must agree on the same bytes.
+function decodeEmbeddedPayloads(value) {
+  const out = [];
+  const b64 = String(value || "").match(/[A-Za-z0-9+/=]{16,}/g) || [];
+  for (const token of b64.slice(0, 16)) {
+    try {
+      const text = Buffer.from(token, "base64").toString("utf8");
+      if (/[\x20-\x7e]{8,}/.test(text)) out.push(text);
+    } catch {
+      // Ignore malformed base64-looking fragments.
+    }
+  }
+  const hex = String(value || "").match(/\b[0-9a-fA-F]{32,}\b/g) || [];
+  for (const token of hex.slice(0, 16)) {
+    if (token.length % 2 !== 0) continue;
+    try {
+      const text = Buffer.from(token, "hex").toString("utf8");
+      if (/[\x20-\x7e]{8,}/.test(text)) out.push(text);
+    } catch {
+      // Ignore malformed hex-looking fragments.
+    }
+  }
+  return out;
 }
 
 function decodeLikelyBase64(value) {

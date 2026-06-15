@@ -92,9 +92,14 @@ async function main() {
     objective: "Export GitHub issue summaries and write public status updates to the gist API at api.github.com.",
     allowed_tools: ["github.sync", "github.gist"],
     allowed_data_classes: ["public", "internal"],
-    allowed_destinations: [ALLOWED_HOST]
+    allowed_destinations: [ALLOWED_HOST],
+    // api.github.com is the mission's intended public-broadcast destination, declared
+    // a public sink — the explicit opt-out of the default external-egress seal. The
+    // byte/shape/taint controls below still apply on top; the sink only removes the
+    // blanket "hold every external post for review" default for this one lane.
+    public_egress_destinations: [ALLOWED_HOST]
   });
-  console.log(`  ${DIM}mission ${capsule.id} — github writes to ${ALLOWED_HOST}, public/internal only${RESET}`);
+  console.log(`  ${DIM}mission ${capsule.id} — github writes to ${ALLOWED_HOST} (declared public sink), public/internal only${RESET}`);
 
   // ── Legit: manifested, declared-public egress flows ─────────────────────────
   step("2. A declared-public sync flows automatically");

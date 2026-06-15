@@ -56,7 +56,10 @@ async function launderMission(runtime) {
     objective: "Read diligence docs and post public status updates to the partner status page.",
     allowed_tools: ["drive.read", "statuspage.update"],
     allowed_data_classes: ["public", "internal", "confidential"],
-    allowed_destinations: ["diligence-room.contoso.example", "status.partner.example"]
+    allowed_destinations: ["diligence-room.contoso.example", "status.partner.example"],
+    // The mission's intended public-broadcast destination — the explicit opt-out of
+    // the default egress seal. Taint/laundering guards still apply on top of it.
+    public_egress_destinations: ["status.partner.example"]
   });
   return capsule;
 }

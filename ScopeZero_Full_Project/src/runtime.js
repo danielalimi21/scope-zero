@@ -201,7 +201,14 @@ export class ScopeZeroRuntime {
     // The session keeps its own sub-scope mark; the effective taint is the max of
     // the two, so taint can only ever be raised by switching scopes, never lowered.
     const taintScopeKey = input.mission_id ? `mission:${input.mission_id}` : sessionId;
-    const currentSessionRisk = await this.store.getSessionRisk(sessionId, input.tenant_id);
+    // Risk budget is mission-scoped for the same reason taint is: a prompt-injected
+    // agent must not reset accumulated session risk by rotating the caller-supplied
+    // session_id. Effective risk = max(session, mission-scope); both are raised after
+    // the decision so neither scope can be drained by switching to the other.
+    const currentSessionRisk = Math.max(
+      await this.store.getSessionRisk(sessionId, input.tenant_id),
+      taintScopeKey === sessionId ? 0 : await this.store.getSessionRisk(taintScopeKey, input.tenant_id)
+    );
     const priorIngestedClassRank = this.store.getSessionIngestedClass
       ? Math.max(
           await this.store.getSessionIngestedClass(sessionId, input.tenant_id),
@@ -370,7 +377,10 @@ export class ScopeZeroRuntime {
     await this.store.recordToolCall(input.tenant_id, input.agent_id, input.tool, behaviorProfile);
 
     const sessionRisk = await this.store.updateSessionRisk(sessionId, verdict.risk_contribution, input.tenant_id);
-    verdict.session_risk = sessionRisk;
+    const missionRisk = taintScopeKey === sessionId
+      ? sessionRisk
+      : await this.store.updateSessionRisk(taintScopeKey, verdict.risk_contribution, input.tenant_id);
+    verdict.session_risk = Math.max(sessionRisk, missionRisk);
 
     // Raise the session ingest-taint high-water mark AFTER the decision, so this
     // call is judged against what the session had touched before it, and the next

@@ -265,6 +265,10 @@ const manifestEgressMission = {
   allowed_tools: ["github.sync"],
   allowed_data_classes: ["public", "internal"],
   allowed_destinations: ["api.github.com"],
+  // The mission's intended public-broadcast destination — opts this lane out of the
+  // default external-egress seal so these tests exercise the byte/taint controls,
+  // not the seal. The taint and shape guards still apply on top.
+  public_egress_destinations: ["api.github.com"],
   action_contracts: [
     { id: "gh-sync", tools: ["github.sync"], operations: ["write"], data_classes: ["public", "internal"], destinations: ["api.github.com"], effect: "allow" }
   ]

@@ -359,6 +359,13 @@ components:
         allowed_destinations:
           type: array
           items: { type: string }
+        public_egress_destinations:
+          type: array
+          description: >-
+            External destinations this mission may post to autonomously — the
+            explicit opt-out of the default external-egress seal. Signed into the
+            capsule. Everything not listed has its external egress held for review.
+          items: { type: string }
         ttl_minutes: { type: integer }
     ActionAuthorizationRequest:
       type: object

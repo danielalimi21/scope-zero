@@ -159,6 +159,27 @@ export function evaluatePolicy({ request, mission, agent, policy, classification
     decision = "approval";
   }
 
+  // Fail-closed egress, decoupled from the mission's data clearance (default ON).
+  // The byte classifier and ingest-taint only catch what the gateway can SEE; a
+  // secret read out-of-band and laundered into benign prose is invisible to both —
+  // those bytes classify as "established public". A mission scoped to public/internal
+  // can still launder out-of-band material, so clearance is NOT a safe trigger:
+  // narrowing a mission must not REDUCE its egress protection. So by default every
+  // meaningful external egress that is not to a contract-declared public-broadcast
+  // sink is held for human review. This is the honest containment posture — autonomy
+  // on an external lane is an explicit, auditable opt-in (public_egress_ok in the
+  // contract, or the mission's public_egress_destinations), not the default.
+  if (
+    policy.seal_external_egress &&
+    externalDestination &&
+    hasMeaningfulPayload(request) &&
+    !destinationIsPublicSink(mission, action) &&
+    decision === "allow"
+  ) {
+    addRisk(22, "external-egress-sealed", `External egress to ${action?.destination?.address || "an external destination"} is sealed to human review by default. Declare it a public-broadcast sink (public_egress_ok in the mission contract, or public_egress_destinations) to keep this lane autonomous.`);
+    decision = "approval";
+  }
+
   if (Number(request.delegation_depth || 0) > Number(policy.max_delegation_depth || 0)) {
     addRisk(28, "delegation-depth", "Agent attempted to delegate beyond the allowed chain depth.");
     decision = "block";
@@ -283,17 +304,23 @@ function destinationIsPublicSink(mission, action) {
   if (!address) {
     return false;
   }
+  const addr = String(address).toLowerCase();
+  const matches = (d) => {
+    const norm = String(d).toLowerCase();
+    return norm === "*" || norm === addr || addr.endsWith(norm);
+  };
+  // Mission-level declaration: a flat list of destinations the mission may post to
+  // autonomously. Ergonomic alternative to flagging each contract.
+  const missionSinks = mission?.public_egress_destinations || [];
+  if (missionSinks.some(matches)) {
+    return true;
+  }
   const contracts = mission?.action_contracts || [];
   return contracts.some((contract) => {
     if (contract.public_egress_ok !== true && contract.public_sink !== true) {
       return false;
     }
-    const dests = contract.destinations || [];
-    return dests.some((d) => {
-      const norm = String(d).toLowerCase();
-      const addr = String(address).toLowerCase();
-      return norm === "*" || norm === addr || addr.endsWith(norm);
-    });
+    return (contract.destinations || []).some(matches);
   });
 }
 

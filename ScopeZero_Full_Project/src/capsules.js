@@ -16,6 +16,10 @@ export function createMissionCapsule(input, signingKey) {
     allowed_tools: input.allowed_tools || [],
     allowed_data_classes: input.allowed_data_classes || ["public", "internal"],
     allowed_destinations: input.allowed_destinations || [],
+    // External destinations this mission may post to autonomously (the explicit
+    // opt-out of the default egress seal). Signed into the capsule so it can't be
+    // widened after issue.
+    public_egress_destinations: input.public_egress_destinations || [],
     action_contracts: input.action_contracts || buildDefaultActionContracts(input),
     evidence_schema: input.evidence_schema || "scopezero.action_authorization.v1",
     approval_profile: input.approval_profile || "standard",

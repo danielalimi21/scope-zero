@@ -68,7 +68,10 @@ const sealMission = {
 const agent = { tenant_id: "tenant_contoso", agent_id: "agent.test", allowed_tools: ["statuspage.update", "broadcast.public"] };
 
 function sealedVerdict({ tool, address, payload, seal }) {
-  const policy = { ...basePolicy, seal_sensitive_mission_egress: seal, require_manifest_for_mutating: false, require_manifest_for_high_impact: false };
+  // seal toggles BOTH the confidential-mission seal and the default external-egress
+  // seal, so the "seal OFF" case isolates the byte classifier (fail-open baseline)
+  // and the "seal ON" case asserts the confidential-mission hold specifically.
+  const policy = { ...basePolicy, seal_sensitive_mission_egress: seal, seal_external_egress: seal, require_manifest_for_mutating: false, require_manifest_for_high_impact: false };
   const classification = classifyPayload(payload);
   const descriptor = describeActionRequest(
     { tool, action: "Post status", operation: "write", destination: { type: "url", address }, payload },

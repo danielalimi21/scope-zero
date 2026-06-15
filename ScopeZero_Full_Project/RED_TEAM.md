@@ -24,30 +24,35 @@ sockets. Missions are Ed25519-signed and cannot be forged or tampered (see
 | 7 | **Launder confidential data into benign prose, post via a manifested tool** | 🔓 **Allowed** (bytes are genuinely benign) | Held when the mission ingested the data through the gateway (ingest-taint), and held unconditionally on a sealed mission. | `tests/egress-integrity.test.js`, `tests/egress-classifier.test.js` |
 | 8 | **Reset ingest-taint with a fresh `session_id`** | 🔓 **Allowed** (taint was per-session, `session_id` is caller-supplied) | **Closed:** taint is keyed at mission scope (`mission_id` is server-resolved and signature-bound); effective taint = `max(session, mission)`. | `tests/egress-integrity.test.js` |
 | 9 | **Self-declare an external destination as `external: false`** to suppress the egress guards | 🔓 **Suppressed the guards** (contract gate still caught the demo case) | **Closed:** a caller may only *raise* `external`; "external" is established from the address against the trusted list, fail-closed on unknown. | `tests/egress-integrity.test.js` |
-| 10 | **SSN without dashes / sub-threshold dumps** | Partially missed | Broadened credential-shape detection (JWT, AWS/GCP/Stripe/GitLab/GitHub keys); bare 9-digit SSN deliberately *not* matched (false-positive on every order number) — covered instead by the seal and the external-classifier seam. | `tests/egress-classifier.test.js` |
-| 11 | **Declare a lockdown but never apply the kernel block** | Self-test exited 0 on OPEN — silently green | **Closed:** OPEN egress exits non-zero whenever containment is expected (lockdown declared / production / `--expect-contained`). | `tests/egress-selftest.test.js` |
+| 10 | **SSN without dashes / sub-threshold dumps** | Partially missed | Broadened credential-shape detection (JWT, AWS/GCP/Stripe/GitLab/GitHub keys); bare 9-digit SSN deliberately *not* matched (false-positive on every order number) — covered instead by the default egress seal and the external-classifier seam. | `tests/egress-classifier.test.js` |
+| 11 | **Declare a lockdown but never apply the kernel block** | Self-test exited 0 on OPEN — silently green | **Closed:** OPEN egress exits non-zero whenever containment is expected (lockdown declared / production / `--expect-contained`); and in production the gateway now **proves** the lockdown at boot (raw-socket canary) and refuses to start if egress is actually open. | `tests/egress-selftest.test.js`, `server.js` |
+| 12 | **Evade the card detector with dot/space separators** (`4012.8888.8888.1881`) | 🔓 **Allowed** (extractor only handled space/dash) | **Closed:** the extractor accepts any common separator (space, dash, dot) with Luhn as the false-positive gate. | `tests/egress-default-seal.test.js` |
+| 13 | **Wrap a credential in base64/hex** to dodge the keyword/prefix finders | 🔓 **Allowed** (DLP path scanned raw bytes only; the influence path decoded but the DLP path didn't) | **Closed:** the classifier decodes embedded base64/hex to printable text and re-scans the finders, so a wrapped `AKIA…`/`ghp_…` is detected. | `tests/egress-default-seal.test.js` |
+| 14 | **Launder a secret read out-of-band into benign prose on a never-tainted session, post to an in-contract host** | 🔓 **Allowed** (bytes are "established public"; no taint accrued; the only catch — the seal — was off by default and gated to confidential missions, so a narrow mission got nothing) | **Closed by default:** `seal_external_egress` is **on by default and decoupled from data clearance** — every external post is held for review unless its destination is an explicitly declared public-broadcast sink. Narrowing a mission can no longer reduce its egress protection. | `tests/egress-default-seal.test.js`, `demo:breach` step 7b |
+| 15 | **Reset the runtime risk budget with a fresh `session_id`** | 🔓 **Allowed** (risk was per-session) | **Closed:** the risk budget is keyed at mission scope like ingest-taint (`max(session, mission)`). | `tests/egress-default-seal.test.js` |
 
 ## What is still NOT covered (by design or roadmap)
 
 These are real and we do not claim otherwise:
 
+- **Laundering to a destination you explicitly trusted.** The default egress seal
+  holds *every* external post for review *except* destinations you declared a
+  public-broadcast sink (`public_egress_ok` / `public_egress_destinations`). On that
+  one lane, laundered benign-looking prose still flows — by your audited choice. The
+  residual is bounded to exactly the destinations you opted out, and the opt-out is
+  signed into the mission capsule. Mitigation: only mark genuinely-public sinks;
+  wire the `classifierResolver` for those lanes.
 - **Cross-mission laundering.** Read confidential data under mission A, then exfil
   under a *separate* valid mission B. This requires the attacker to already hold a
   second signed mission whose action contract permits the external destination —
-  the contract gate bounds it, but a sufficiently broad second mission would not be
-  caught by taint alone. Mitigation: narrow missions; the egress seal on B.
-- **Out-of-band ingest.** A tool result fed straight to the model without ever
-  crossing the gateway is invisible to ingest-taint. Mitigation: route tool I/O
-  through the gateway, or run sensitive missions with the egress seal on.
-- **Non-English / semantic sensitivity.** The default classifier is regex+shape;
+  the contract gate bounds it, and B's external egress is sealed by default unless
+  B declares a public sink. Mitigation: narrow missions; do not declare public sinks
+  on data-handling missions.
+- **Non-English / semantic sensitivity.** The default classifier is regex+shape+decode;
   it will miss semantically sensitive content carrying no recognizable
-  value/keyword/shape. Mitigation: wire the `classifierResolver` seam to an
-  embedding/commercial-DLP classifier (it can only raise the class, never lower).
-- **Per-session risk-budget reset.** The runtime *risk budget* is still keyed per
-  `session_id`, so a fresh session resets accumulated risk. This is an advisory
-  escalation, not a hard gate, and the security-critical taint is now mission-keyed
-  — but a future change should mission-scope the risk budget too. Tracked, not yet
-  done.
+  value/keyword/shape/encoding. The default egress seal contains the *action*
+  regardless, but for autonomous public-sink lanes, wire the `classifierResolver`
+  seam to an embedding/commercial-DLP classifier (it can only raise the class).
 - **TLS-body inspection and DNS-tunnel exfil.** The proxy is host-only by design;
   recursive DNS-tunnel exfil and payload inspection over an allowed host are a
   filtering-resolver / TLS-terminating-proxy concern on the roadmap.
@@ -57,8 +62,9 @@ These are real and we do not claim otherwise:
 The closed bypasses are regression-tested:
 
 ```bash
-node --test tests/egress-integrity.test.js     # taint scope + external floor
-node --test tests/egress-classifier.test.js    # value detectors + egress seal
+node --test tests/egress-integrity.test.js      # taint scope + external floor
+node --test tests/egress-classifier.test.js     # value detectors + clearance-gated seal
+node --test tests/egress-default-seal.test.js   # default-on seal, separator/encoding evasion, mission-scoped risk
 node --test tests/egress-selftest.test.js       # lockdown self-test exit codes
 node --test tests/crypto-forgery.test.js        # verifier-cannot-forge
 npm test                                         # full suite

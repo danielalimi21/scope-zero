@@ -52,6 +52,44 @@ if (!startup.ok) {
   process.exit(1);
 }
 
+// Boot-time egress-lockdown PROOF, not just declaration. The sync gate above only
+// checks that SCOPEZERO_EGRESS_LOCKDOWN is *declared*; an operator could set it to
+// "k8s" without actually applying a NetworkPolicy. Here, in production with a
+// declared lockdown, we open a raw socket to a canary host from inside the
+// gateway's own network namespace. If it CONNECTS, egress is open — the declaration
+// is false and an agent could bypass the gateway — so refuse to start. A contained
+// result (timeout/refused) lets boot proceed. SCOPEZERO_SKIP_EGRESS_BOOT_CHECK=true
+// opts out mid-rollout and is logged loudly.
+async function verifyEgressLockdownAtBoot() {
+  const production = process.env.NODE_ENV === "production";
+  const lockdown = String(process.env.SCOPEZERO_EGRESS_LOCKDOWN || "none").toLowerCase();
+  const declared = ["k8s", "docker"].includes(lockdown);
+  if (!production || !declared) return;
+  if (process.env.SCOPEZERO_SKIP_EGRESS_BOOT_CHECK === "true") {
+    console.warn("ScopeZero startup warning: SCOPEZERO_SKIP_EGRESS_BOOT_CHECK=true — egress lockdown is declared but NOT verified at boot. Verify with `node tools/lockdown-selftest.js --expect-contained`.");
+    return;
+  }
+  const [host, portRaw] = String(process.env.SCOPEZERO_EGRESS_CANARY || "1.1.1.1:443").split(":");
+  const port = Number(portRaw || 443);
+  const result = await new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const done = (r) => { if (!settled) { settled = true; socket.destroy(); resolve(r); } };
+    socket.setTimeout(4000);
+    socket.once("connect", () => done("open"));
+    socket.once("timeout", () => done("blocked"));
+    socket.once("error", () => done("blocked"));
+    socket.connect(port, host);
+  });
+  if (result === "open") {
+    console.error("ScopeZero refused to start — fatal configuration errors:");
+    console.error(`- SCOPEZERO_EGRESS_LOCKDOWN is declared '${lockdown}' but a raw socket to ${host}:${port} CONNECTED. Egress is open: the kernel lockdown is not actually applied, so an agent can bypass the gateway. Apply the NetworkPolicy/Docker network and retry, or set SCOPEZERO_SKIP_EGRESS_BOOT_CHECK=true to override mid-rollout.`);
+    process.exit(1);
+  }
+  console.log(`ScopeZero egress lockdown verified at boot — raw socket to ${host}:${port} was contained.`);
+}
+await verifyEgressLockdownAtBoot();
+
 const REQUIRE_PROXY_PATH = process.env.SCOPEZERO_REQUIRE_PROXY_PATH === "true";
 const PROXY_PATH_MARKER = process.env.SCOPEZERO_PROXY_PATH_MARKER || "";
 

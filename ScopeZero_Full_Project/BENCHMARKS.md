@@ -59,12 +59,33 @@ approval cost O(n), so an approval-heavy workload degraded quadratically
 (measured: ~4 decisions/sec, p50 ~7 s, climbing to 30 s). The hot-path counters
 had already been moved off this path; the collection writes had not.
 
-The fix: mirror tables are now authoritative and written one row per change
-(`INSERT … ON CONFLICT DO UPDATE`); the blob carries only the small non-mirrored
-singletons. Result above — **~340× throughput, ~150× lower p50**, and flat
-latency across the run. (The Postgres store still carries the pre-fix write path;
-applying the same incremental writes there is a tracked follow-up that needs a
-live Postgres environment to verify multi-replica consistency.)
+The fix (both stores): mirror tables are now authoritative and written one row
+per change (`INSERT … ON CONFLICT DO UPDATE`); the blob carries only the small
+non-mirrored singletons; state is hydrated from the tables on load. SQLite result
+above — **~340× throughput, ~150× lower p50**, flat latency across the run.
+
+The Postgres store had the same defect plus a global write lock. It got the same
+incremental treatment (per-row upserts inside tenant-scoped transactions, so
+row-level security stays forced; no global lock), verified against a live
+Postgres 16:
+
+| Postgres (live, RLS on) | Before | After |
+|---|---|---|
+| Throughput (1k req @ 16) | ~14/sec | ~720/sec (**~52×**) |
+| Throughput (5k req @ 64) | — | ~785/sec (linear; held at 5× load) |
+| Latency p50 / p99 (5k) | ~584 / ~4,156 ms | ~82 / ~148 ms |
+| Errors / dangerous allowed | 0 / 0 | 0 / 0 |
+
+Reopen hydration verified: agents, missions, and updated approval status survive
+a restart from the tables (not the blob).
+
+Multi-replica note: removing the global write lock means authz-object reads
+(agent/mission/approval) are served from each replica's in-memory state, hydrated
+at startup — single-replica is fully current; across replicas it is eventually
+consistent and **fails closed** (an unseen mission is rejected, never wrongly
+allowed). Session risk, ingest-taint, and metrics are read fresh from their tables
+per call, so those stay cross-replica consistent. Read-through for authz objects
+is a future multi-replica step.
 
 ## Honest scope
 
@@ -84,11 +105,11 @@ live Postgres environment to verify multi-replica consistency.)
   changed input. A shared cache (Redis) can be wired via the cache seam if cross-
   replica cache hit-rate becomes the bottleneck; it is not required for
   correctness.
-- Measured on a single host over loopback HTTP with SQLite — indicative on your
-  hardware, not a published SLA or a datacenter result. Not yet measured in the
-  open: sustained throughput against a managed Postgres (the Postgres store still
-  has the pre-fix collection-write path), and end-to-end latency with a real OTLP
-  exporter and external ledger anchor in the path. Those depend on the deployment
-  and are pilot-stage measurements.
+- Measured on a single host over loopback HTTP (SQLite, and a local Postgres 16
+  for the Postgres figures) — indicative on your hardware, not a published SLA or a
+  datacenter result. Not yet measured in the open: sustained throughput against a
+  *managed* multi-node Postgres, and end-to-end latency with a real OTLP exporter
+  and external ledger anchor in the path. Those depend on the deployment and are
+  pilot-stage measurements.
 
 CI runs both benches on every push as a regression gate (`.github/workflows/scopezero-ci.yml`).

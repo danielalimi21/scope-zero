@@ -5,32 +5,85 @@ export class PostgresStore extends Store {
     super("postgres://scopezero", defaultPolicy);
     this.connectionString = connectionString;
     this.pool = null;
-    this.transactionDepth = 0;
+    // Per-row writes are async (unlike SQLite's sync writers). The base-class
+    // mutators call the row-writers synchronously, so each writer queues its
+    // upsert here and the overridden mutator awaits a flush.
+    this._pending = [];
   }
 
-  // The SQLite store persists mirrored collections with per-row writers (O(1) per
-  // change). The Postgres store still persists them via syncRelationalTables
-  // inside save()/withWriteLock (strongly consistent under the global write lock),
-  // so the per-row writers inherited from the base class are intentionally no-ops
-  // here, and reconcileMirrored is unused (Postgres init loads from the blob).
-  //
-  // FOLLOW-UP: give Postgres the same incremental per-row writes + table-
-  // authoritative hydration that SQLite now has, to remove the O(n^2) full-state
-  // rebuild and the global write lock on collection writes. That needs a live
-  // Postgres test environment to verify multi-replica consistency, so it is not
-  // done blind here. Until then, Postgres carries the pre-fix write behavior.
-  writeTenantRow() {}
-  writeAgentRow() {}
-  writeMissionRow() {}
-  writeApprovalRow() {}
-  writePolicyRow() {}
-  writePolicyVersionRow() {}
-  reconcileMirrored() {}
+  // Mirror tables are authoritative and written one row per change — the same
+  // model as the SQLite store, replacing the old full-state rebuild under a global
+  // write lock (which made collection writes O(n) each, i.e. O(n^2) for a
+  // workload that creates n records). Each upsert runs in its own tenant-scoped
+  // transaction (set_config GUC) so row-level security stays forced. The base
+  // mutators call these synchronously; we queue and flush from the overrides.
+  _queueRow(fn) {
+    this._pending.push(fn);
+  }
 
-  // Non-mirrored singletons (mcp_servers, agent_certs) are persisted as part of
-  // the full state blob by the Postgres save() path.
+  async _flushRows() {
+    const tasks = this._pending;
+    this._pending = [];
+    for (const task of tasks) await task();
+  }
+
+  writeTenantRow(tenant) {
+    this._queueRow(() => this.withTenant(tenant.tenant_id, (client) => client.query(
+      `INSERT INTO tenants (tenant_id, name, plan, body, updated_at) VALUES ($1, $2, $3, $4::jsonb, now())
+       ON CONFLICT (tenant_id) DO UPDATE SET name = excluded.name, plan = excluded.plan, body = excluded.body, updated_at = now()`,
+      [tenant.tenant_id, tenant.name || tenant.tenant_id, tenant.plan || "enterprise", JSON.stringify(tenant)]
+    )));
+  }
+
+  writeAgentRow(agent) {
+    this._queueRow(() => this.withTenant(agent.tenant_id, (client) => client.query(
+      `INSERT INTO agents (tenant_id, agent_id, owner, status, body, updated_at) VALUES ($1, $2, $3, $4, $5::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET owner = excluded.owner, status = excluded.status, body = excluded.body, updated_at = now()`,
+      [agent.tenant_id, agent.agent_id, agent.owner || "", agent.status || "active", JSON.stringify(agent)]
+    )));
+  }
+
+  writeMissionRow(mission) {
+    this._queueRow(() => this.withTenant(mission.tenant_id, (client) => client.query(
+      `INSERT INTO missions (id, tenant_id, agent_id, status, body, updated_at) VALUES ($1, $2, $3, $4, $5::jsonb, now())
+       ON CONFLICT (id) DO UPDATE SET tenant_id = excluded.tenant_id, agent_id = excluded.agent_id, status = excluded.status, body = excluded.body, updated_at = now()`,
+      [mission.id, mission.tenant_id, mission.agent_id, mission.status || "active", JSON.stringify(mission)]
+    )));
+  }
+
+  writeApprovalRow(approval) {
+    this._queueRow(() => this.withTenant(approval.tenant_id, (client) => client.query(
+      `INSERT INTO approvals (id, tenant_id, agent_id, status, body, updated_at) VALUES ($1, $2, $3, $4, $5::jsonb, now())
+       ON CONFLICT (id) DO UPDATE SET tenant_id = excluded.tenant_id, agent_id = excluded.agent_id, status = excluded.status, body = excluded.body, updated_at = now()`,
+      [approval.id, approval.tenant_id, approval.agent_id, approval.status || "pending", JSON.stringify(approval)]
+    )));
+  }
+
+  writePolicyRow(tenantId, policy) {
+    this._queueRow(() => this.withTenant(tenantId, (client) => client.query(
+      `INSERT INTO policies (tenant_id, body, updated_at) VALUES ($1, $2::jsonb, now())
+       ON CONFLICT (tenant_id) DO UPDATE SET body = excluded.body, updated_at = now()`,
+      [tenantId, JSON.stringify(policy)]
+    )));
+  }
+
+  writePolicyVersionRow(version) {
+    this._queueRow(() => this.withTenant(version.tenant_id, (client) => client.query(
+      `INSERT INTO policy_versions (id, tenant_id, version, status, body, created_at, approved_at) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+       ON CONFLICT (id) DO UPDATE SET tenant_id = excluded.tenant_id, version = excluded.version, status = excluded.status, body = excluded.body, created_at = excluded.created_at, approved_at = excluded.approved_at`,
+      [version.id, version.tenant_id, Number(version.version || 0), version.status, JSON.stringify(version), version.created_at, version.approved_at || version.reviewed_at || null]
+    )));
+  }
+
+  // Non-mirrored singletons (mcp_servers, agent_certs) — written as the small
+  // state blob; mirrored collections live in their own row tables.
   async saveBlob() {
-    return this.save();
+    const { tenants, agents, missions, approvals, policies, policy_versions, ...rest } = this.state;
+    await this.pool.query(
+      `INSERT INTO scopezero_state (id, body, updated_at) VALUES ($1, $2::jsonb, now())
+       ON CONFLICT (id) DO UPDATE SET body = excluded.body, updated_at = now()`,
+      ["primary", JSON.stringify(rest)]
+    );
   }
 
   async init() {
@@ -46,7 +99,69 @@ export class PostgresStore extends Store {
     const result = await this.pool.query("SELECT body FROM scopezero_state WHERE id = $1", ["primary"]);
     this.state = result.rows[0]?.body || createEmptyState(this.defaultPolicy);
     await this.migrateHotPathState();
-    await this.save();
+    // Mirror tables are authoritative for the six collections: hydrate state from
+    // them, or seed them once from the loaded state on a fresh/pre-migration db.
+    await this.hydrateMirrored();
+    // Blob now carries only the small non-mirrored singletons.
+    await this.saveBlob();
+  }
+
+  // Reads of mirrored collections (getAgent/getMission/approvals) are served from
+  // in-memory `this.state`, hydrated here at startup. Single-replica is fully
+  // current (it reads its own writes). Across replicas this is eventually
+  // consistent: a mission/approval created on another replica is not visible until
+  // this one re-hydrates — and that direction FAILS CLOSED (an unseen mission is
+  // rejected, never wrongly allowed). The security-critical hot state (session
+  // risk, ingest-taint, metrics) is read fresh from its tables per call, so it is
+  // cross-replica consistent. Making authz-object reads cross-replica fresh (read
+  // -through to the tables) is a future step for a multi-replica deployment.
+  //
+  // On load, read the mirrored collections from their tables (authoritative).
+  // Cross-tenant read, so the tenant GUC is set to the '*' wildcard. If a table
+  // is empty (fresh db, or a pre-migration blob that still carried these
+  // collections), seed it once from the state we just loaded.
+  async hydrateMirrored() {
+    const emptyTables = [];
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL scopezero.tenant_id = '*'");
+      const hasRows = async (table) => (await client.query(`SELECT 1 FROM ${table} LIMIT 1`)).rowCount > 0;
+      const readAll = async (table) => (await client.query(`SELECT body FROM ${table}`)).rows.map((r) => r.body);
+
+      for (const table of ["tenants", "agents", "missions", "approvals", "policy_versions"]) {
+        if (await hasRows(table)) {
+          this.state[table] = await readAll(table);
+        } else {
+          this.state[table] = this.state[table] || [];
+          emptyTables.push(table);
+        }
+      }
+      if (await hasRows("policies")) {
+        const rows = (await client.query("SELECT tenant_id, body FROM policies")).rows;
+        this.state.policies = Object.fromEntries(rows.map((r) => [r.tenant_id, r.body]));
+      } else {
+        this.state.policies = this.state.policies || {};
+        emptyTables.push("policies");
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    // Seed the empty tables from in-memory state. tenants is seeded first (the
+    // other collections reference it by foreign key); the flush preserves order.
+    for (const table of ["tenants", "agents", "missions", "approvals", "policy_versions"]) {
+      if (!emptyTables.includes(table)) continue;
+      for (const record of this.state[table]) this.rowWriterFor(table)(record);
+    }
+    if (emptyTables.includes("policies")) {
+      for (const [tenantId, policy] of Object.entries(this.state.policies)) this.writePolicyRow(tenantId, policy);
+    }
+    await this._flushRows();
   }
 
   // Lift any legacy blob-resident hot-path state into the dedicated tables, then
@@ -313,78 +428,49 @@ export class PostgresStore extends Store {
     await this.enableTenantRls();
   }
 
-  async refresh() {
-    const result = await this.pool.query("SELECT body FROM scopezero_state WHERE id = $1", ["primary"]);
-    this.state = result.rows[0]?.body || this.state || createEmptyState(this.defaultPolicy);
-    return this.state;
-  }
-
-  async save() {
-    if (this.transactionDepth > 0) {
-      return;
-    }
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      await this.writeState(client);
-      await this.syncRelationalTables(client);
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  async withWriteLock(fn) {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      this.transactionDepth += 1;
-      await client.query("SELECT id FROM scopezero_write_locks WHERE id = $1 FOR UPDATE", ["primary"]);
-      const result = await client.query("SELECT body FROM scopezero_state WHERE id = $1", ["primary"]);
-      this.state = result.rows[0]?.body || createEmptyState(this.defaultPolicy);
-      const value = await fn();
-      await this.writeState(client);
-      await this.syncRelationalTables(client);
-      await client.query("COMMIT");
-      return value;
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      this.transactionDepth = Math.max(0, this.transactionDepth - 1);
-      client.release();
-    }
-  }
-
+  // Collection mutators: run the base-class in-memory logic (which queues the
+  // affected row upserts via the writers above), then flush those upserts. No
+  // global write lock, no full-state rebuild — each write is O(1) atomic upserts.
   async setPolicy(tenantId, policyPatch) {
-    return this.withWriteLock(() => super.setPolicy(tenantId, policyPatch));
+    const result = await super.setPolicy(tenantId, policyPatch);
+    await this._flushRows();
+    return result;
   }
 
   async proposePolicy(tenantId, policyPatch, proposedBy) {
-    return this.withWriteLock(() => super.proposePolicy(tenantId, policyPatch, proposedBy));
+    const result = await super.proposePolicy(tenantId, policyPatch, proposedBy);
+    await this._flushRows();
+    return result;
   }
 
   async reviewPolicyProposal(proposalId, decision, reviewer, tenantId = null) {
-    return this.withWriteLock(() => super.reviewPolicyProposal(proposalId, decision, reviewer, tenantId));
+    const result = await super.reviewPolicyProposal(proposalId, decision, reviewer, tenantId);
+    await this._flushRows();
+    return result;
   }
 
   async upsertAgent(agent) {
-    return this.withWriteLock(() => super.upsertAgent(agent));
+    const result = await super.upsertAgent(agent);
+    await this._flushRows();
+    return result;
   }
 
   async addMission(capsule) {
-    return this.withWriteLock(() => super.addMission(capsule));
+    const result = await super.addMission(capsule);
+    await this._flushRows();
+    return result;
   }
 
   async addApproval(approval) {
-    return this.withWriteLock(() => super.addApproval(approval));
+    const result = await super.addApproval(approval);
+    await this._flushRows();
+    return result;
   }
 
   async updateApproval(approvalId, patch, tenantId = null) {
-    return this.withWriteLock(() => super.updateApproval(approvalId, patch, tenantId));
+    const result = await super.updateApproval(approvalId, patch, tenantId);
+    await this._flushRows();
+    return result;
   }
 
   async enableTenantRls() {
@@ -424,76 +510,6 @@ export class PostgresStore extends Store {
     `);
   }
 
-  async writeState(client) {
-    await client.query(
-      `INSERT INTO scopezero_state (id, body, updated_at)
-       VALUES ($1, $2::jsonb, now())
-       ON CONFLICT (id) DO UPDATE SET body = excluded.body, updated_at = now()`,
-      ["primary", JSON.stringify(this.state || createEmptyState(this.defaultPolicy))]
-    );
-  }
-
-  async syncRelationalTables(client) {
-    const state = this.state || createEmptyState(this.defaultPolicy);
-    await client.query("SET LOCAL scopezero.tenant_id = '*'");
-    await client.query("DELETE FROM policy_versions");
-    await client.query("DELETE FROM approvals");
-    await client.query("DELETE FROM missions");
-    await client.query("DELETE FROM agents");
-    await client.query("DELETE FROM policies");
-    await client.query("DELETE FROM tenants");
-
-    for (const tenant of state.tenants || []) {
-      await client.query(
-        `INSERT INTO tenants (tenant_id, name, plan, body, updated_at)
-         VALUES ($1, $2, $3, $4::jsonb, now())`,
-        [tenant.tenant_id, tenant.name, tenant.plan, JSON.stringify(tenant)]
-      );
-    }
-    for (const agent of state.agents || []) {
-      await client.query(
-        `INSERT INTO agents (tenant_id, agent_id, owner, status, body, updated_at)
-         VALUES ($1, $2, $3, $4, $5::jsonb, now())`,
-        [agent.tenant_id, agent.agent_id, agent.owner, agent.status, JSON.stringify(agent)]
-      );
-    }
-    for (const mission of state.missions || []) {
-      await client.query(
-        `INSERT INTO missions (id, tenant_id, agent_id, status, body, updated_at)
-         VALUES ($1, $2, $3, $4, $5::jsonb, now())`,
-        [mission.id, mission.tenant_id, mission.agent_id, mission.status, JSON.stringify(mission)]
-      );
-    }
-    for (const approval of state.approvals || []) {
-      await client.query(
-        `INSERT INTO approvals (id, tenant_id, agent_id, status, body, updated_at)
-         VALUES ($1, $2, $3, $4, $5::jsonb, now())`,
-        [approval.id, approval.tenant_id, approval.agent_id, approval.status, JSON.stringify(approval)]
-      );
-    }
-    for (const [tenantId, policy] of Object.entries(state.policies || {})) {
-      await client.query(
-        `INSERT INTO policies (tenant_id, body, updated_at)
-         VALUES ($1, $2::jsonb, now())`,
-        [tenantId, JSON.stringify(policy)]
-      );
-    }
-    for (const version of state.policy_versions || []) {
-      await client.query(
-        `INSERT INTO policy_versions (id, tenant_id, version, status, body, created_at, approved_at)
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
-        [
-          version.id,
-          version.tenant_id,
-          Number(version.version || 0),
-          version.status,
-          JSON.stringify(version),
-          version.created_at,
-          version.approved_at || version.reviewed_at || null
-        ]
-      );
-    }
-  }
 }
 
 function createEmptyState(defaultPolicy) {

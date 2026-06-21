@@ -37,6 +37,6 @@
     "node": ">=20"
   },
   "optionalDependencies": {
-    "pg": "^8.16.0"
+    "pg": "^8.22.0"
   }
 }

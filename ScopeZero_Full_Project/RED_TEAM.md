@@ -30,6 +30,13 @@ sockets. Missions are Ed25519-signed and cannot be forged or tampered (see
 | 13 | **Wrap a credential in base64/hex** to dodge the keyword/prefix finders | 🔓 **Allowed** (DLP path scanned raw bytes only; the influence path decoded but the DLP path didn't) | **Closed:** the classifier decodes embedded base64/hex to printable text and re-scans the finders, so a wrapped `AKIA…`/`ghp_…` is detected. | `tests/egress-default-seal.test.js` |
 | 14 | **Launder a secret read out-of-band into benign prose on a never-tainted session, post to an in-contract host** | 🔓 **Allowed** (bytes are "established public"; no taint accrued; the only catch — the seal — was off by default and gated to confidential missions, so a narrow mission got nothing) | **Closed by default:** `seal_external_egress` is **on by default and decoupled from data clearance** — every external post is held for review unless its destination is an explicitly declared public-broadcast sink. Narrowing a mission can no longer reduce its egress protection. | `tests/egress-default-seal.test.js`, `demo:breach` step 7b |
 | 15 | **Reset the runtime risk budget with a fresh `session_id`** | 🔓 **Allowed** (risk was per-session) | **Closed:** the risk budget is keyed at mission scope like ingest-taint (`max(session, mission)`). | `tests/egress-default-seal.test.js` |
+| 16 | **Suffix-confusable destination** — allow `example.com`, egress to attacker-registered `evil-example.com` | 🔓 **Allowed** at the action layer (bare `endsWith`, no label boundary) | **Closed:** all host/domain matches require a DNS label boundary (exact or `.suffix`). Swept across action layer, trusted-destination classification, and public-sink check; the proxy already enforced it. | `tests/redteam-adversarial.test.js` |
+| 17 | **Downgrade operation** — call `bank.wire`/`data.export` with `operation:"read"` to dodge the high-impact gate | 🔓 **Allowed** (self-declared op overrode name inference when no manifest) | **Closed:** operation is floored to the more impactful of declared vs tool-name-inferred; mislabel escalates to approval. | `tests/redteam-adversarial.test.js` |
+| 18 | **Classifier ReDoS** — a multi-MB unbroken alnum payload | 🔓 **~110s CPU hang per request** (email regex `[..]+@` backtracks O(n²)) | **Closed:** bounded the regex quantifiers (linear), capped the scan at 256KB (oversized → not established-public), and only decode ≤2KB tokens. 5MB now ~80ms. | `tests/redteam-adversarial.test.js` |
+| 19 | **Ledger corruption under concurrency** — concurrent appends | 🔓 **Tamper-evident chain failed its own verification** under load (file write order ≠ hash-chain order) | **Closed:** appends are serialized end-to-end so file order == chain order; the chain head advances only after a durable write. Load test now asserts the ledger verifies after the run. | `tests/redteam-adversarial.test.js`, `tools/load-test.js` |
+| 20 | **Hostile capsule crashes the verifier** — circular/deeply-nested structure | 🔓 **Threw** (`stableStringify` stack overflow) instead of denying | **Closed:** verification is fully wrapped — any error returns `false` (fail-closed). | `tests/redteam-adversarial.test.js` |
+| 21 | **Token-auth bypass** — alg:none, RS256-without-JWKS confusion, payload tamper, forged/expired sig | Already enforced | **Confirmed closed:** alg pinned, constant-time HMAC compare, exp checked; all bypasses rejected. | `tests/redteam-adversarial.test.js` |
+| 22 | **Money-amount / delegation-depth / hostile-input evasion** | Already enforced | **Confirmed closed:** payment gated regardless of amount tricks (NaN/string/negative/huge); over-depth delegation blocked; hostile input shapes never throw. | `tests/redteam-adversarial.test.js` |
 
 ## What is still NOT covered (by design or roadmap)
 
@@ -56,6 +63,13 @@ These are real and we do not claim otherwise:
 - **TLS-body inspection and DNS-tunnel exfil.** The proxy is host-only by design;
   recursive DNS-tunnel exfil and payload inspection over an allowed host are a
   filtering-resolver / TLS-terminating-proxy concern on the roadmap.
+- **Multi-replica ledger integrity.** The hash-chained ledger is single-writer:
+  appends are serialized within a process so the chain is correct under concurrency
+  (attack #19), but two replicas each chaining from their own head would fork the
+  chain. Single-replica is correct; multi-replica needs a shared sequencer
+  (DB-side monotonic chain or external anchor) — roadmap. Same applies to
+  authz-object reads under Postgres (eventually consistent across replicas,
+  fail-closed). See `BENCHMARKS.md`.
 
 ## Reproduce
 
@@ -67,5 +81,7 @@ node --test tests/egress-classifier.test.js     # value detectors + clearance-ga
 node --test tests/egress-default-seal.test.js   # default-on seal, separator/encoding evasion, mission-scoped risk
 node --test tests/egress-selftest.test.js       # lockdown self-test exit codes
 node --test tests/crypto-forgery.test.js        # verifier-cannot-forge
+node --test tests/redteam-adversarial.test.js   # destination/op/ReDoS/ledger/capsule/auth
+node tools/load-test.js 8000 64                  # end-to-end load + ledger-verifies-under-load
 npm test                                         # full suite
 ```

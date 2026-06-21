@@ -90,6 +90,32 @@ test("tampering a signed capsule (any field) fails verification", async () => {
   }
 });
 
+// ── Hostile input shapes/types must not crash the evaluator ─────────────────
+test("evaluateToolCall never throws on hostile input shapes", async () => {
+  const { runtime, rootDir } = await freshRuntime();
+  try {
+    const cap = await narrowMission(runtime, "agent.rt.input", { allowed_destinations: ["docs.example.com"] });
+    const base = { tenant_id: TENANT, agent_id: "agent.rt.input", mission_id: cap.id, tool: "drive.read", action: "r", operation: "read" };
+    let deep = {}; let c = deep; for (let i = 0; i < 50000; i++) { c.x = {}; c = c.x; }
+    const inputs = [
+      { ...base, payload: [1, 2, 3], destination: { address: "docs.example.com" } },
+      { ...base, payload: deep, destination: { address: "docs.example.com" } },
+      { ...base, payload: {}, destination: 12345 },
+      { ...base, payload: {}, destination: ["x"] },
+      { ...base, tool: { evil: 1 }, payload: {}, destination: { address: "docs.example.com" } },
+      { ...base, payload: {}, destination: { address: "docs.example.com" }, money: "lots" },
+      { ...base, payload: Object.assign(Object.create(null), { text: "x" }), destination: { address: "docs.example.com" } }
+    ];
+    for (const input of inputs) {
+      let out;
+      await assert.doesNotReject(async () => { out = await runtime.evaluateToolCall(input); }, "must not throw");
+      assert.ok(["allow", "block", "approval", "redact", "quarantine_context", "pause_session"].includes(out.decision));
+    }
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 // ── Malformed/hostile capsule must be rejected, never crash the verifier ─────
 test("verifyMissionCapsule fails closed on malformed/hostile input (no throw)", () => {
   const circular = { signature: "sz2.abcd" }; circular.self = circular;

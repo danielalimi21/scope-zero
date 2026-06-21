@@ -802,8 +802,17 @@ function enforceRateLimit(req, res) {
   }
   const now = Date.now();
   const windowMs = 60_000;
+  // Key by client only — NOT by path. Keying per-path would let one client mint
+  // an unbounded number of buckets by hitting distinct URLs (memory-exhaustion
+  // DoS). Sweep expired buckets when the map grows, so memory is bounded by the
+  // number of distinct clients seen within a window, not all clients ever.
   const remote = req.socket.remoteAddress || "unknown";
-  const key = `${remote}:${req.url.split("?")[0]}`;
+  const key = remote;
+  if (rateLimiter.size > 10_000) {
+    for (const [k, b] of rateLimiter) {
+      if (now > b.resetAt) rateLimiter.delete(k);
+    }
+  }
   const bucket = rateLimiter.get(key) || { count: 0, resetAt: now + windowMs };
   if (now > bucket.resetAt) {
     bucket.count = 0;

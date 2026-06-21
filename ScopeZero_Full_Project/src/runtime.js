@@ -6,6 +6,7 @@ import { evaluatePolicy } from "./policyEngine.js";
 import { evaluateMissionAlignment } from "./missionAlignment.js";
 import { classifyPayload, detectPromptInfluence, isExternalDestination, mergeClassification } from "./sensitiveData.js";
 import { Ledger } from "./ledger.js";
+import { PostgresLedger } from "./postgresLedger.js";
 import { createLedgerAnchorFromEnv } from "./ledgerAnchor.js";
 import { PostgresStore } from "./postgresStore.js";
 import { Store } from "./store.js";
@@ -16,14 +17,19 @@ import { issueAgentCertificate, verifyAgentCertificate, verifyCertIdentity } fro
 
 export async function createRuntime({ rootDir, signingSecret, signingPrivateKeyPem = process.env.SCOPEZERO_SIGNING_PRIVATE_KEY || "", additionalPublicKeyPems = parsePublicKeyPems(process.env.SCOPEZERO_SIGNING_PUBLIC_KEYS), toolManifestResolver = null, approvalNotifier = null, classifierResolver = null }) {
   const defaultPolicy = JSON.parse(await readFile(new URL("../config/defaultPolicy.json", import.meta.url), "utf8"));
-  const store = process.env.SCOPEZERO_STORE === "postgres"
+  const isPostgres = process.env.SCOPEZERO_STORE === "postgres";
+  const store = isPostgres
     ? new PostgresStore({ connectionString: process.env.DATABASE_URL, defaultPolicy })
     : new Store(`${rootDir}/data/scopezero.db`, defaultPolicy);
-  const ledger = new Ledger(`${rootDir}/data/ledger.jsonl`, {
-    anchor: createLedgerAnchorFromEnv(process.env),
-    secret: process.env.SCOPEZERO_LEDGER_SECRET || signingSecret
-  });
   await store.init();
+  const ledgerSecret = process.env.SCOPEZERO_LEDGER_SECRET || signingSecret;
+  const anchor = createLedgerAnchorFromEnv(process.env);
+  // On Postgres, use the shared-sequencer ledger so the hash chain stays correct
+  // across replicas (advisory-lock-serialized appends). On SQLite/local, the file
+  // ledger's in-process serialization is sufficient (single writer).
+  const ledger = isPostgres
+    ? new PostgresLedger({ pool: store.pool, secret: ledgerSecret, anchor })
+    : new Ledger(`${rootDir}/data/ledger.jsonl`, { anchor, secret: ledgerSecret });
   await ledger.init();
   return new ScopeZeroRuntime({ store, ledger, signingSecret, signingPrivateKeyPem, additionalPublicKeyPems, toolManifestResolver, approvalNotifier, classifierResolver });
 }

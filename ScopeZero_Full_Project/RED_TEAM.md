@@ -63,13 +63,20 @@ These are real and we do not claim otherwise:
 - **TLS-body inspection and DNS-tunnel exfil.** The proxy is host-only by design;
   recursive DNS-tunnel exfil and payload inspection over an allowed host are a
   filtering-resolver / TLS-terminating-proxy concern on the roadmap.
-- **Multi-replica ledger integrity.** The hash-chained ledger is single-writer:
-  appends are serialized within a process so the chain is correct under concurrency
-  (attack #19), but two replicas each chaining from their own head would fork the
-  chain. Single-replica is correct; multi-replica needs a shared sequencer
-  (DB-side monotonic chain or external anchor) — roadmap. Same applies to
-  authz-object reads under Postgres (eventually consistent across replicas,
-  fail-closed). See `BENCHMARKS.md`.
+- **Multi-replica authz-object reads.** Under Postgres, agent/mission/approval
+  *reads* are served from each replica's in-memory state (hydrated at startup), so
+  they are eventually consistent across replicas — and **fail closed** (an unseen
+  mission is rejected, never wrongly allowed). Hot security state (risk, taint,
+  metrics) is read fresh from its tables per call, so it stays consistent.
+  Read-through for authz objects is a roadmap item. (The **ledger** is no longer in
+  this bucket — see below.)
+
+**Now closed:** multi-replica **ledger** integrity. On Postgres the ledger uses a
+shared sequencer (`src/postgresLedger.js`): appends are serialized cluster-wide
+with a transaction-scoped advisory lock and ordered by a monotonic `seq`, so the
+hash chain stays valid even with concurrent appends from multiple replicas, and
+tampering is still detected. Verified: 400 concurrent appends across two replicas
+→ chain valid, tamper caught (`tests/postgres-ledger.test.js`).
 
 ## Reproduce
 

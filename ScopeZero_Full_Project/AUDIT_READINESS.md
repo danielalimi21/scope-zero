@@ -54,11 +54,13 @@ is memory-bounded.
   pilot / funding. The automated SAST + red-team suite + dependency scanning are
   the interim; a human audit is the next bar and is budget-gated, not a blocker
   for early design-partner use.
-- **Multi-replica** — single-replica is fully correct. The hash-chained ledger is
-  single-writer (serialized in-process); cross-replica needs a shared sequencer.
-  Authz-object reads under Postgres are eventually consistent across replicas and
-  **fail closed**. Hot security state (risk, taint, metrics) is read fresh per
-  call and is cross-replica consistent. See [BENCHMARKS.md](BENCHMARKS.md).
+- **Multi-replica** — single-replica is fully correct. The **ledger** is now
+  multi-replica-safe on Postgres via a shared sequencer (advisory-lock-serialized
+  appends + monotonic order; `src/postgresLedger.js`, `tests/postgres-ledger.test.js`).
+  Remaining: authz-object reads under Postgres are eventually consistent across
+  replicas and **fail closed** (read-through is roadmap). Hot security state (risk,
+  taint, metrics) is read fresh per call and is cross-replica consistent. See
+  [BENCHMARKS.md](BENCHMARKS.md).
 - **TLS-body inspection / DNS-tunnel exfil** — the egress proxy is host-only by
   design; payload inspection over an allowed host and recursive DNS-tunnel
   prevention are a TLS-terminating-proxy / filtering-resolver concern (roadmap).

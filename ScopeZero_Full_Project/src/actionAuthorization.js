@@ -45,7 +45,23 @@ export function describeActionRequest(request = {}, classification = { label: "p
   const action = String(request.action || request.operation || "unspecified action");
   const destination = normalizeDestination(request.destination || {});
   const toolManifest = resolveToolManifest(tool, manifestSource, request.tool_manifest, policy.tool_manifests);
-  const operation = String(toolManifest?.operation || request.operation || inferOperation({ tool, action })).toLowerCase();
+  // Operation floor (mirrors the data-class floor): an authoritative manifest is
+  // ground truth. Without one, the agent's self-declared operation is NOT trusted
+  // to LOWER impact — we take the more impactful of the declared operation and the
+  // one inferred from the tool/action name. This stops a self-declared "read" on a
+  // tool like "bank.wire" or "data.export" from dodging the high-impact / mutating
+  // gates. (Floored-up actions escalate to approval, not block, so a mislabel is a
+  // review, and an operator can add a manifest to restore autonomy.)
+  const operation = String(
+    toolManifest?.operation
+      || (request.operation
+        // Floor a self-declared operation against the impact inferred from the TOOL
+        // NAME only (the free-text action is also self-declared and noisy). This
+        // catches "read" on bank.wire / data.export without escalating a legit
+        // "write" just because the action prose says "post".
+        ? mostImpactfulOperation(request.operation, inferOperation({ tool, action: "" }))
+        : inferOperation({ tool, action }))
+  ).toLowerCase();
   const actionType = String(toolManifest?.action_type || request.action_type || classifyActionType({ operation, tool, action, destination, manifest: toolManifest })).toLowerCase();
   // Server-side classification is a floor: an agent may declare a HIGHER data
   // class than detected, but never a lower one. Otherwise a request could carry
@@ -174,6 +190,30 @@ function inferOperation({ tool = "", action = "" }) {
   const text = `${tool} ${action}`;
   const matched = OPERATION_HINTS.find(([, pattern]) => pattern.test(text));
   return matched ? matched[0] : "execute";
+}
+
+// Impact ordering used by the operation floor. Higher = more dangerous. Unknown
+// operations rank as low-impact (1) so a novel label never silently outranks a
+// real high-impact name inference.
+const OPERATION_IMPACT = {
+  payment: 6, privilege_change: 6,
+  external_send: 5, export: 5, delegate: 5, deploy: 5,
+  delete: 4, write: 3, create: 3, update: 3, merge: 3,
+  draft: 2,
+  read: 1, search: 1, list: 1, execute: 1
+};
+
+function operationRank(operation) {
+  return OPERATION_IMPACT[String(operation || "").toLowerCase()] ?? 1;
+}
+
+// The more impactful of the agent's declared operation and the name-inferred one.
+// Self-declaration can only RAISE impact, never lower it.
+function mostImpactfulOperation(declared, inferred) {
+  if (!declared) {
+    return inferred;
+  }
+  return operationRank(inferred) > operationRank(declared) ? inferred : declared;
 }
 
 function classifyActionType({ operation, tool, action, destination, manifest }) {

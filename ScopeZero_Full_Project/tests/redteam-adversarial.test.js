@@ -11,7 +11,7 @@ import path from "node:path";
 import { createRuntime } from "../src/runtime.js";
 import { evaluateProxyConnect } from "../src/proxyEnforcer.js";
 import { verifyMissionCapsule } from "../src/capsules.js";
-import { destinationAllowed } from "../src/actionAuthorization.js";
+import { destinationAllowed, describeActionRequest } from "../src/actionAuthorization.js";
 
 const SECRET = "redteam-signing-secret";
 const TENANT = "tenant_contoso";
@@ -180,6 +180,46 @@ test("out-of-scope tool and unknown tenant are blocked", async () => {
       payload: {}, destination: { type: "resource", address: "docs.example.com" }
     }).catch((e) => ({ decision: "block", error: e.message }));
     assert.notEqual(crossTenant.decision, "allow", "cross-tenant mission use must not be allowed");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// ── Self-declared operation cannot be downgraded below the tool's real impact ─
+test("declaring 'read' on a high-impact tool does not downgrade its operation", () => {
+  // No manifest: the tool-name inference is the floor; a self-declared benign op
+  // cannot lower it.
+  for (const [tool, declared, expected] of [
+    ["bank.wire", "read", "payment"],
+    ["data.export", "read", "export"],
+    ["billing.transfer", "draft", "payment"]
+  ]) {
+    const d = describeActionRequest({ tool, action: "harmless lookup", operation: declared }, { label: "public" }, {});
+    assert.equal(d.operation, expected, `${tool} declared ${declared} must floor to ${expected}, got ${d.operation}`);
+  }
+  // A genuinely benign tool is not escalated.
+  assert.equal(describeActionRequest({ tool: "drive.read", action: "read", operation: "read" }, { label: "public" }, {}).operation, "read");
+});
+
+test("a high-impact tool mislabeled 'read' is not silently allowed end-to-end", async () => {
+  const { runtime, rootDir } = await freshRuntime();
+  try {
+    const cap = await narrowMission(runtime, "agent.rt.opdown", {
+      allowed_tools: ["data.export"],
+      allowed_destinations: ["docs.example.com"],
+      mission: {
+        action_contracts: [{
+          id: "c.export", tools: ["data.export"], operations: ["read", "export", "execute"],
+          data_classes: ["public", "internal"], destinations: ["docs.example.com"], effect: "allow"
+        }]
+      }
+    });
+    const out = await runtime.evaluateToolCall({
+      tenant_id: TENANT, agent_id: "agent.rt.opdown", mission_id: cap.id,
+      tool: "data.export", action: "routine lookup", operation: "read",
+      payload: { text: "export everything" }, destination: { type: "resource", address: "docs.example.com" }
+    });
+    assert.notEqual(out.decision, "allow", `export mislabeled read must not auto-allow (got ${out.decision})`);
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }

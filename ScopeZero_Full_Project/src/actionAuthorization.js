@@ -239,7 +239,13 @@ function listMatches(values = [], requested = "") {
 function destinationMatches(candidate, address) {
   const normalizedCandidate = String(candidate).toLowerCase();
   const normalizedAddress = String(address).toLowerCase();
-  return wildcardMatches(normalizedCandidate, normalizedAddress) || normalizedAddress.endsWith(normalizedCandidate);
+  if (wildcardMatches(normalizedCandidate, normalizedAddress)) {
+    return true;
+  }
+  // Suffix match must respect a DNS label boundary, like the proxy enforcer:
+  // "example.com" matches "api.example.com" but NOT "evilexample.com" or
+  // "attacker-example.com" (attacker-registerable suffix-confusable hosts).
+  return normalizedAddress.endsWith("." + normalizedCandidate);
 }
 
 function wildcardMatches(pattern, value) {

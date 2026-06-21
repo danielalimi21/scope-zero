@@ -4,11 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 import { createId, nowIso, sha256, stableStringify } from "./crypto.js";
 import { buildMcpServerRecord, WELL_KNOWN_MCP_SERVERS } from "./mcpTrustRegistry.js";
 
-// Top-level state collections that are mirrored into queryable relational
-// tables. Everything else (behavior_profiles, sessions, mcp_servers,
-// agent_certs, metrics) is read by the app from the in-memory state blob and is
-// never queried via SQL, so it is not mirrored.
-const MIRRORED_TABLES = ["tenants", "agents", "missions", "approvals", "policies", "policy_versions"];
+// Top-level state collections that are durable in their own row tables, written
+// one row per change and treated as authoritative on load: tenants, agents,
+// missions, approvals, policies, policy_versions. Everything else
+// (behavior_profiles, sessions, metrics in their own tables; mcp_servers and
+// agent_certs in the state blob) is handled separately.
 
 export class Store {
   constructor(dbPath, defaultPolicy) {
@@ -16,15 +16,6 @@ export class Store {
     this.defaultPolicy = defaultPolicy;
     this.state = null;
     this.db = null;
-    // Tracks which mirrored tables changed since the last persist so save()
-    // only rebuilds those, instead of DELETE+INSERTing all six on every write.
-    this.dirtyTables = new Set();
-  }
-
-  markDirty(...tables) {
-    for (const table of tables) {
-      this.dirtyTables.add(table);
-    }
   }
 
   async init() {
@@ -37,9 +28,16 @@ export class Store {
     // full-state blob, so a single call no longer reserializes all state — and
     // (in Postgres) no longer takes the global write lock.
     this.migrateHotPathState();
-    // First persist rebuilds every mirror table from loaded/seed state.
-    this.markDirty(...MIRRORED_TABLES);
-    await this.save();
+    // Mirrored collections (tenants/agents/missions/approvals/policies/
+    // policy_versions) live in their own row tables, written one row per change
+    // (not a full-table rebuild). On load the tables are authoritative: hydrate
+    // state from them, or — on a fresh/legacy/pre-migration db where a table is
+    // empty — seed the table once from the loaded state.
+    this.reconcileMirrored();
+    // The blob now carries ONLY non-mirrored singletons (mcp_servers,
+    // agent_certs); mirrored collections are durable in their tables, so a write
+    // to one of them no longer reserializes all state.
+    await this.saveBlob();
   }
 
   // One-time lift of any legacy blob-resident behavior_profiles/sessions into
@@ -193,8 +191,13 @@ export class Store {
     }
   }
 
-  async save() {
-    const body = JSON.stringify(this.state);
+  // Persist only the non-mirrored singletons (mcp_servers, agent_certs, …) to the
+  // state blob. Mirrored collections are durable in their own row tables, written
+  // incrementally, so they are stripped from the blob here — a write to one of
+  // them no longer reserializes all state.
+  saveBlob() {
+    const { tenants, agents, missions, approvals, policies, policy_versions, ...rest } = this.state;
+    const body = JSON.stringify(rest);
     this.db
       .prepare(
         `INSERT INTO scopezero_state (id, body, updated_at)
@@ -202,70 +205,100 @@ export class Store {
          ON CONFLICT(id) DO UPDATE SET body = excluded.body, updated_at = CURRENT_TIMESTAMP`
       )
       .run("primary", body);
-    if (this.dirtyTables.size > 0) {
-      this.syncRelationalTables(this.dirtyTables);
-      this.dirtyTables.clear();
-    }
   }
 
-  // Rebuilds only the mirror tables flagged dirty since the last save. A
-  // per-tool-call write (behavior/session/metrics) touches no mirrored
-  // collection and so skips the relational rebuild entirely.
-  syncRelationalTables(tables = new Set(MIRRORED_TABLES)) {
-    const syncers = {
-      tenants: () => {
-        this.db.exec("DELETE FROM tenants");
-        const insert = this.db.prepare("INSERT INTO tenants (tenant_id, name, plan, body) VALUES (?, ?, ?, ?)");
-        for (const tenant of this.state.tenants) {
-          insert.run(tenant.tenant_id, tenant.name, tenant.plan, JSON.stringify(tenant));
-        }
-      },
-      agents: () => {
-        this.db.exec("DELETE FROM agents");
-        const insert = this.db.prepare("INSERT INTO agents (tenant_id, agent_id, owner, status, body) VALUES (?, ?, ?, ?, ?)");
-        for (const agent of this.state.agents) {
-          insert.run(agent.tenant_id, agent.agent_id, agent.owner, agent.status, JSON.stringify(agent));
-        }
-      },
-      missions: () => {
-        this.db.exec("DELETE FROM missions");
-        const insert = this.db.prepare("INSERT INTO missions (id, tenant_id, agent_id, status, body) VALUES (?, ?, ?, ?, ?)");
-        for (const mission of this.state.missions) {
-          insert.run(mission.id, mission.tenant_id, mission.agent_id, mission.status, JSON.stringify(mission));
-        }
-      },
-      approvals: () => {
-        this.db.exec("DELETE FROM approvals");
-        const insert = this.db.prepare("INSERT INTO approvals (id, tenant_id, agent_id, status, body) VALUES (?, ?, ?, ?, ?)");
-        for (const approval of this.state.approvals) {
-          insert.run(approval.id, approval.tenant_id, approval.agent_id, approval.status, JSON.stringify(approval));
-        }
-      },
-      policies: () => {
-        this.db.exec("DELETE FROM policies");
-        const insert = this.db.prepare("INSERT INTO policies (tenant_id, body) VALUES (?, ?)");
-        for (const [tenantId, policy] of Object.entries(this.state.policies)) {
-          insert.run(tenantId, JSON.stringify(policy));
-        }
-      },
-      policy_versions: () => {
-        this.db.exec("DELETE FROM policy_versions");
-        const insert = this.db.prepare("INSERT INTO policy_versions (id, tenant_id, version, status, body, created_at, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
-        for (const version of this.state.policy_versions || []) {
-          insert.run(version.id, version.tenant_id, version.version, version.status, JSON.stringify(version), version.created_at, version.approved_at || null);
-        }
-      }
-    };
+  // ── Incremental mirror-table row writes (one row per change, O(1)) ──────────
+  writeTenantRow(tenant) {
+    this.db
+      .prepare(
+        `INSERT INTO tenants (tenant_id, name, plan, body) VALUES (?, ?, ?, ?)
+         ON CONFLICT(tenant_id) DO UPDATE SET name = excluded.name, plan = excluded.plan, body = excluded.body, updated_at = CURRENT_TIMESTAMP`
+      )
+      .run(tenant.tenant_id, tenant.name || tenant.tenant_id, tenant.plan || "enterprise", JSON.stringify(tenant));
+  }
 
-    this.db.exec("BEGIN IMMEDIATE TRANSACTION");
-    try {
-      for (const table of tables) {
-        syncers[table]?.();
+  writeAgentRow(agent) {
+    this.db
+      .prepare(
+        `INSERT INTO agents (tenant_id, agent_id, owner, status, body) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(tenant_id, agent_id) DO UPDATE SET owner = excluded.owner, status = excluded.status, body = excluded.body, updated_at = CURRENT_TIMESTAMP`
+      )
+      .run(agent.tenant_id, agent.agent_id, agent.owner || "", agent.status || "active", JSON.stringify(agent));
+  }
+
+  writeMissionRow(mission) {
+    this.db
+      .prepare(
+        `INSERT INTO missions (id, tenant_id, agent_id, status, body) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET tenant_id = excluded.tenant_id, agent_id = excluded.agent_id, status = excluded.status, body = excluded.body, updated_at = CURRENT_TIMESTAMP`
+      )
+      .run(mission.id, mission.tenant_id, mission.agent_id, mission.status || "active", JSON.stringify(mission));
+  }
+
+  writeApprovalRow(approval) {
+    this.db
+      .prepare(
+        `INSERT INTO approvals (id, tenant_id, agent_id, status, body) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET tenant_id = excluded.tenant_id, agent_id = excluded.agent_id, status = excluded.status, body = excluded.body, updated_at = CURRENT_TIMESTAMP`
+      )
+      .run(approval.id, approval.tenant_id, approval.agent_id, approval.status || "pending", JSON.stringify(approval));
+  }
+
+  writePolicyRow(tenantId, policy) {
+    this.db
+      .prepare(
+        `INSERT INTO policies (tenant_id, body) VALUES (?, ?)
+         ON CONFLICT(tenant_id) DO UPDATE SET body = excluded.body, updated_at = CURRENT_TIMESTAMP`
+      )
+      .run(tenantId, JSON.stringify(policy));
+  }
+
+  writePolicyVersionRow(version) {
+    this.db
+      .prepare(
+        `INSERT INTO policy_versions (id, tenant_id, version, status, body, created_at, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET tenant_id = excluded.tenant_id, version = excluded.version, status = excluded.status, body = excluded.body, created_at = excluded.created_at, approved_at = excluded.approved_at`
+      )
+      .run(version.id, version.tenant_id, version.version, version.status, JSON.stringify(version), version.created_at, version.approved_at || null);
+  }
+
+  rowWriterFor(table) {
+    return {
+      tenants: (r) => this.writeTenantRow(r),
+      agents: (r) => this.writeAgentRow(r),
+      missions: (r) => this.writeMissionRow(r),
+      approvals: (r) => this.writeApprovalRow(r),
+      policy_versions: (r) => this.writePolicyVersionRow(r)
+    }[table];
+  }
+
+  // On load the mirror tables are the source of truth for the six collections.
+  // If a table has rows, hydrate state from it. If it is empty (fresh seed,
+  // legacy JSON, or a pre-migration blob that still carried these collections),
+  // seed the table once from the state we just loaded so the two are consistent
+  // going forward. State collections are always left as proper containers so the
+  // in-memory readers never see `undefined`.
+  reconcileMirrored() {
+    const has = (table) => this.db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get() !== undefined;
+    const readAll = (table) => this.db.prepare(`SELECT body FROM ${table}`).all().map((r) => JSON.parse(r.body));
+
+    for (const table of ["tenants", "agents", "missions", "approvals", "policy_versions"]) {
+      if (has(table)) {
+        this.state[table] = readAll(table);
+      } else {
+        this.state[table] = this.state[table] || [];
+        for (const record of this.state[table]) this.rowWriterFor(table)(record);
       }
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
+    }
+
+    // policies is a { tenant_id: policy } map, not an array.
+    if (has("policies")) {
+      this.state.policies = Object.fromEntries(
+        this.db.prepare("SELECT tenant_id, body FROM policies").all().map((r) => [r.tenant_id, JSON.parse(r.body)])
+      );
+    } else {
+      this.state.policies = this.state.policies || {};
+      for (const [tenantId, policy] of Object.entries(this.state.policies)) this.writePolicyRow(tenantId, policy);
     }
   }
 
@@ -294,8 +327,7 @@ export class Store {
       policy_hash: sha256(stableStringify({ ...this.getPolicy(tenantId), ...policyPatch }))
     };
     this.state.policy_versions ||= [];
-    this.markDirty("policies", "policy_versions");
-    this.state.policy_versions.push({
+    const versionRecord = {
       id: createId("policyver", `${tenantId}:${activeVersion}`),
       tenant_id: tenantId,
       version: activeVersion,
@@ -306,8 +338,10 @@ export class Store {
       approved_at: nowIso(),
       policy: this.state.policies[tenantId],
       policy_hash: this.state.policies[tenantId].policy_hash
-    });
-    await this.save();
+    };
+    this.state.policy_versions.push(versionRecord);
+    this.writePolicyRow(tenantId, this.state.policies[tenantId]);
+    this.writePolicyVersionRow(versionRecord);
     return this.state.policies[tenantId];
   }
 
@@ -337,8 +371,7 @@ export class Store {
       policy_hash: sha256(stableStringify(policy))
     };
     this.state.policy_versions.push(proposal);
-    this.markDirty("policy_versions");
-    await this.save();
+    this.writePolicyVersionRow(proposal);
     return proposal;
   }
 
@@ -356,9 +389,9 @@ export class Store {
       proposal.approved_at = proposal.reviewed_at;
       proposal.policy.policy_hash = proposal.policy_hash;
       this.state.policies[proposal.tenant_id] = proposal.policy;
+      this.writePolicyRow(proposal.tenant_id, proposal.policy);
     }
-    this.markDirty("policies", "policy_versions");
-    await this.save();
+    this.writePolicyVersionRow(proposal);
     return proposal;
   }
 
@@ -370,14 +403,16 @@ export class Store {
   async upsertAgent(agent) {
     this.assertTenant(agent.tenant_id);
     const existing = this.state.agents.findIndex((item) => item.agent_id === agent.agent_id && item.tenant_id === agent.tenant_id);
+    let stored;
     if (existing >= 0) {
       this.state.agents[existing] = { ...this.state.agents[existing], ...agent };
+      stored = this.state.agents[existing];
     } else {
       this.state.agents.push(agent);
+      stored = agent;
     }
-    this.markDirty("agents");
-    await this.save();
-    return agent;
+    this.writeAgentRow(stored);
+    return stored;
   }
 
   getAgent(tenantId, agentId) {
@@ -387,8 +422,7 @@ export class Store {
   async addMission(capsule) {
     this.assertTenant(capsule.tenant_id);
     this.state.missions.push(capsule);
-    this.markDirty("missions");
-    await this.save();
+    this.writeMissionRow(capsule);
     return capsule;
   }
 
@@ -403,8 +437,7 @@ export class Store {
   async addApproval(approval) {
     this.assertTenant(approval.tenant_id);
     this.state.approvals.push(approval);
-    this.markDirty("approvals");
-    await this.save();
+    this.writeApprovalRow(approval);
     return approval;
   }
 
@@ -414,8 +447,7 @@ export class Store {
       return null;
     }
     Object.assign(approval, patch);
-    this.markDirty("approvals");
-    await this.save();
+    this.writeApprovalRow(approval);
     return approval;
   }
 
@@ -550,7 +582,7 @@ export class Store {
     } else {
       this.state.mcp_servers.push(server);
     }
-    await this.save();
+    await this.saveBlob();
     return this.state.mcp_servers[idx >= 0 ? idx : this.state.mcp_servers.length - 1];
   }
 
@@ -567,7 +599,7 @@ export class Store {
   async addAgentCert(cert) {
     this.state.agent_certs ||= [];
     this.state.agent_certs.push(cert);
-    await this.save();
+    await this.saveBlob();
     return cert;
   }
 
@@ -580,7 +612,7 @@ export class Store {
     cert.revoked_at = nowIso();
     cert.revoked_by = revoked_by || "security.operator@scopezero.local";
     cert.revocation_reason = reason || "unspecified";
-    await this.save();
+    await this.saveBlob();
     return cert;
   }
 

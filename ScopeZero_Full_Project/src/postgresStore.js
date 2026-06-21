@@ -8,6 +8,31 @@ export class PostgresStore extends Store {
     this.transactionDepth = 0;
   }
 
+  // The SQLite store persists mirrored collections with per-row writers (O(1) per
+  // change). The Postgres store still persists them via syncRelationalTables
+  // inside save()/withWriteLock (strongly consistent under the global write lock),
+  // so the per-row writers inherited from the base class are intentionally no-ops
+  // here, and reconcileMirrored is unused (Postgres init loads from the blob).
+  //
+  // FOLLOW-UP: give Postgres the same incremental per-row writes + table-
+  // authoritative hydration that SQLite now has, to remove the O(n^2) full-state
+  // rebuild and the global write lock on collection writes. That needs a live
+  // Postgres test environment to verify multi-replica consistency, so it is not
+  // done blind here. Until then, Postgres carries the pre-fix write behavior.
+  writeTenantRow() {}
+  writeAgentRow() {}
+  writeMissionRow() {}
+  writeApprovalRow() {}
+  writePolicyRow() {}
+  writePolicyVersionRow() {}
+  reconcileMirrored() {}
+
+  // Non-mirrored singletons (mcp_servers, agent_certs) are persisted as part of
+  // the full state blob by the Postgres save() path.
+  async saveBlob() {
+    return this.save();
+  }
+
   async init() {
     if (!this.connectionString) {
       throw new Error("DATABASE_URL is required when SCOPEZERO_STORE=postgres.");

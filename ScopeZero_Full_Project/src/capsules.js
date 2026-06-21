@@ -59,14 +59,22 @@ export function verifyMissionCapsule(capsule, verifyKey) {
   if (!capsule.signature.startsWith("sz2.")) {
     return false;
   }
-  const unsigned = { ...capsule };
-  delete unsigned.signature;
-  const message = stableStringify(unsigned);
-  const signature = capsule.signature.slice(4);
-  if (Array.isArray(verifyKey)) {
-    return ed25519VerifyWithKeyset(verifyKey, message, signature, capsule.kid) !== null;
+  // Verification must NEVER throw — any error means "not verified" (fail closed).
+  // A hostile/malformed capsule (circular or deeply nested structure, bad hex
+  // signature, etc.) would otherwise crash the gateway via stableStringify or the
+  // crypto layer instead of being cleanly rejected.
+  try {
+    const unsigned = { ...capsule };
+    delete unsigned.signature;
+    const message = stableStringify(unsigned);
+    const signature = capsule.signature.slice(4);
+    if (Array.isArray(verifyKey)) {
+      return ed25519VerifyWithKeyset(verifyKey, message, signature, capsule.kid) !== null;
+    }
+    return ed25519Verify(verifyKey, message, signature);
+  } catch {
+    return false;
   }
-  return ed25519Verify(verifyKey, message, signature);
 }
 
 export function isExpired(capsule) {

@@ -90,6 +90,25 @@ test("tampering a signed capsule (any field) fails verification", async () => {
   }
 });
 
+// ── Malformed/hostile capsule must be rejected, never crash the verifier ─────
+test("verifyMissionCapsule fails closed on malformed/hostile input (no throw)", () => {
+  const circular = { signature: "sz2.abcd" }; circular.self = circular;
+  for (const c of [
+    { signature: "sz2.zzznothex" },
+    { signature: "sz2." },
+    { signature: "sz2." + "f".repeat(200000) },
+    { signature: 12345 },
+    { signature: null },
+    {},
+    null,
+    circular
+  ]) {
+    let result;
+    assert.doesNotThrow(() => { result = verifyMissionCapsule(c, "secret"); }, "verify must never throw");
+    assert.equal(result, false, "malformed capsule must not verify");
+  }
+});
+
 // ── Self-declared data-class downgrade must not lower the real class ─────────
 test("declaring restricted content as public does not bypass the data ceiling", async () => {
   const { runtime, rootDir } = await freshRuntime();

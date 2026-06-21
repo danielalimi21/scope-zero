@@ -287,6 +287,47 @@ test("a host suffix-confusable with a declared public sink does not bypass the s
   }
 });
 
+// ── Money-amount evasion still hits the high-impact payment gate ─────────────
+test("a payment is gated regardless of money-amount tricks (NaN/string/negative/huge)", async () => {
+  const { runtime, rootDir } = await freshRuntime();
+  try {
+    const cap = await narrowMission(runtime, "agent.rt.money", {
+      allowed_tools: ["bank.wire"], allowed_destinations: ["bank.example.com"],
+      mission: { action_contracts: [{
+        id: "c.wire", tools: ["bank.wire"], operations: ["payment", "execute"],
+        data_classes: ["public", "internal"], destinations: ["bank.example.com"], effect: "approval"
+      }] }
+    });
+    for (const money of [{ amount: {} }, { amount: "5000000" }, { amount: -5 }, { amount: 1e12 }]) {
+      const out = await runtime.evaluateToolCall({
+        tenant_id: TENANT, agent_id: "agent.rt.money", mission_id: cap.id,
+        tool: "bank.wire", action: "pay vendor", operation: "payment",
+        payload: { text: "pay" }, destination: { type: "url", address: "bank.example.com" }, money
+      });
+      assert.notEqual(out.decision, "allow", `payment with money=${JSON.stringify(money)} must not auto-allow`);
+    }
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// ── Delegation beyond the signed depth is blocked ───────────────────────────
+test("delegating beyond the mission's max depth is blocked", async () => {
+  const { runtime, rootDir } = await freshRuntime();
+  try {
+    const cap = await narrowMission(runtime, "agent.rt.deleg", { allowed_destinations: ["docs.example.com"] });
+    const out = await runtime.evaluateToolCall({
+      tenant_id: TENANT, agent_id: "agent.rt.deleg", mission_id: cap.id,
+      tool: "drive.read", action: "read", operation: "read",
+      payload: {}, destination: { type: "resource", address: "docs.example.com" },
+      delegation_depth: 5
+    });
+    assert.equal(out.decision, "block", `delegation beyond max depth must block (got ${out.decision})`);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 // ── Prototype pollution via payload keys must not mutate Object.prototype ────
 test("payload with __proto__/constructor keys does not pollute prototypes", async () => {
   const { runtime, rootDir } = await freshRuntime();

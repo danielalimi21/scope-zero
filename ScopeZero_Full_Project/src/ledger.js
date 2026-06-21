@@ -8,6 +8,12 @@ export class Ledger {
     this.previousHash = "genesis";
     this.anchor = anchor;
     this.secret = secret || "";
+    // Appends MUST be serialized: the hash chain links each entry to the previous
+    // one, and the file's line order is what verify() walks. Under concurrent
+    // requests, overlapping appendFile calls would write lines out of chain order
+    // (or interleave), making an untampered ledger fail its own verification. This
+    // promise tail serializes every append end-to-end (chain + write).
+    this._tail = Promise.resolve();
   }
 
   // Keyed (HMAC-SHA256) chain hash when a secret is configured. Without the
@@ -29,7 +35,16 @@ export class Ledger {
     }
   }
 
-  async append(record) {
+  append(record) {
+    // Queue behind any in-flight append so chain order == file order, even under
+    // concurrent callers. The tail never rejects (a failed append must not wedge
+    // the chain), but this call still surfaces its own error to the caller.
+    const run = this._tail.then(() => this.#appendNow(record));
+    this._tail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  async #appendNow(record) {
     const entry = {
       id: createId("evt", record.event_type || "decision"),
       time: nowIso(),
@@ -37,8 +52,10 @@ export class Ledger {
       record
     };
     entry.hash = this.chainHash(stableStringify(entry));
-    this.previousHash = entry.hash;
     await fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`);
+    // Advance the chain head only AFTER the line is durably written, so a failed
+    // write does not leave a gap that the next entry would chain across.
+    this.previousHash = entry.hash;
     await this.anchor?.record(entry);
     return entry;
   }

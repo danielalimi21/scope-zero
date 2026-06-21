@@ -288,6 +288,25 @@ test("a host suffix-confusable with a declared public sink does not bypass the s
   }
 });
 
+// ── The tamper-evident ledger stays valid under heavy concurrent appends ────
+test("ledger hash chain stays valid under concurrent writes", async () => {
+  const { runtime, rootDir } = await freshRuntime();
+  try {
+    const cap = await narrowMission(runtime, "agent.rt.ledger", { allowed_destinations: ["docs.example.com"] });
+    await Promise.all(Array.from({ length: 400 }, (_, i) =>
+      runtime.evaluateToolCall({
+        tenant_id: TENANT, agent_id: "agent.rt.ledger", mission_id: cap.id, session_id: `s${i}`,
+        tool: "drive.read", action: "read", operation: "read",
+        payload: {}, destination: { type: "resource", address: "docs.example.com" }
+      })
+    ));
+    const v = await runtime.verifyLedger();
+    assert.equal(v.valid, true, `ledger must verify clean under concurrency (${(v.failures || []).length} failures)`);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 // ── Auth: no alg-confusion, no tamper, no expiry bypass ─────────────────────
 test("bearer-token verification rejects forged/tampered/expired tokens", async () => {
   const auth = new AuthService({ secret: "redteam-auth-secret" });

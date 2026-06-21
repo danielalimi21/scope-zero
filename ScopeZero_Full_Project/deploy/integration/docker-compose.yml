@@ -1,0 +1,58 @@
+# Live integration harness: ScopeZero against a real IdP (Keycloak) and a real
+# OpenTelemetry collector. Proves the OIDC/JWKS and OTLP seams end-to-end with
+# production-shaped components (the code paths themselves are unit-proven in
+# tests/oidc.test.js and tests/runtime-integration.test.js).
+#
+#   docker compose -f deploy/integration/docker-compose.yml up -d
+#   ./deploy/integration/verify.sh
+#   docker compose -f deploy/integration/docker-compose.yml down -v
+#
+# Local-harness only: dev secrets, HTTP, no lockdown. NOT a production deployment.
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak-realm.json:/opt/keycloak/data/import/scopezero-realm.json:ro
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo ok >&3"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.105.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4318:4318"   # OTLP HTTP
+
+  scopezero:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    environment:
+      PORT: "8788"
+      NODE_ENV: development           # harness only; production adds the startup gate
+      SCOPEZERO_REQUIRE_AUTH: "true"
+      SCOPEZERO_ALLOW_DEV_TOKEN: "false"
+      # Real IdP: verify RS256 access tokens against Keycloak's JWKS.
+      SCOPEZERO_OIDC_ISSUER: "http://keycloak:8080/realms/scopezero"
+      SCOPEZERO_OIDC_AUDIENCE: "api://scopezero"
+      SCOPEZERO_OIDC_JWKS_URL: "http://keycloak:8080/realms/scopezero/protocol/openid-connect/certs"
+      # Real observability: export traces to the OTLP collector.
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318/v1/traces"
+      SCOPEZERO_SIGNING_SECRET: "integration-harness-signing-secret"
+      SCOPEZERO_AUTH_SECRET: "integration-harness-auth-secret"
+    ports:
+      - "8788:8788"

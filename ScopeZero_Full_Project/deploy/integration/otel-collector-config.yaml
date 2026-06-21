@@ -1,0 +1,17 @@
+# Minimal OTLP collector for the integration harness: accept OTLP/HTTP and log
+# every span so `verify.sh` can confirm ScopeZero's traces actually arrive.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]

@@ -359,7 +359,14 @@ export function isExternalDestination(destination = {}, policy = {}) {
     return false;
   }
 
-  return !(policy.trusted_destinations || []).some((trusted) => target.endsWith(String(trusted).toLowerCase()));
+  // A destination is internal only if it equals a trusted domain or is a
+  // subdomain of one (label boundary). A bare endsWith would treat the
+  // attacker-registerable "evil-contoso.example" as internal to "contoso.example"
+  // and silently bypass the external-egress seal.
+  return !(policy.trusted_destinations || []).some((trusted) => {
+    const t = String(trusted).toLowerCase();
+    return target === t || target.endsWith("." + t);
+  });
 }
 
 function labelForLevel(level) {

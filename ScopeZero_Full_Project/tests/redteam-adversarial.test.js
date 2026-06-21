@@ -11,6 +11,7 @@ import path from "node:path";
 import { createRuntime } from "../src/runtime.js";
 import { evaluateProxyConnect } from "../src/proxyEnforcer.js";
 import { verifyMissionCapsule } from "../src/capsules.js";
+import { isExternalDestination } from "../src/sensitiveData.js";
 import { destinationAllowed, describeActionRequest } from "../src/actionAuthorization.js";
 
 const SECRET = "redteam-signing-secret";
@@ -182,6 +183,19 @@ test("out-of-scope tool and unknown tenant are blocked", async () => {
     assert.notEqual(crossTenant.decision, "allow", "cross-tenant mission use must not be allowed");
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+// ── "internal" classification can't be spoofed to dodge the egress seal ─────
+test("a host suffix-confusable with a trusted domain is still treated as external", () => {
+  const policy = { trusted_destinations: ["contoso.example"] };
+  for (const ext of ["evil-contoso.example", "xcontoso.example", "attacker.com"]) {
+    assert.equal(isExternalDestination({ address: ext }, policy), true, `${ext} must be external`);
+    // The self-declared external:false flag must not be able to lower it.
+    assert.equal(isExternalDestination({ address: ext, external: false }, policy), true, `${ext} external:false must not spoof internal`);
+  }
+  for (const internal of ["contoso.example", "api.contoso.example"]) {
+    assert.equal(isExternalDestination({ address: internal }, policy), false, `${internal} is genuinely internal`);
   }
 });
 

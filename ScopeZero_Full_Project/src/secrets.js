@@ -4,6 +4,7 @@ import path from "node:path";
 import { nowIso } from "./crypto.js";
 
 const ALGORITHM = "aes-256-gcm";
+const GCM_TAG_BYTES = 16; // pin the full GCM auth-tag length (forgery resistance)
 
 export class SecretManager {
   constructor({ rootDir, masterKey = "", provider = "local" }) {
@@ -64,7 +65,7 @@ export class SecretManager {
   encrypt(plaintext) {
     const key = this.key();
     const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv, { authTagLength: GCM_TAG_BYTES });
     const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
     const tag = cipher.getAuthTag();
     return `${iv.toString("base64url")}.${tag.toString("base64url")}.${encrypted.toString("base64url")}`;
@@ -72,8 +73,15 @@ export class SecretManager {
 
   decrypt(value) {
     const [ivRaw, tagRaw, encryptedRaw] = value.split(".");
-    const decipher = crypto.createDecipheriv(ALGORITHM, this.key(), Buffer.from(ivRaw, "base64url"));
-    decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
+    const tag = Buffer.from(tagRaw || "", "base64url");
+    // Pin the GCM auth-tag length and reject a short/truncated tag before use. A
+    // shorter-than-full tag weakens forgery resistance, so a tampered ciphertext
+    // with a truncated tag must fail loudly, not verify against a weaker tag.
+    if (tag.length !== GCM_TAG_BYTES) {
+      throw new Error("Invalid authentication tag length on encrypted secret.");
+    }
+    const decipher = crypto.createDecipheriv(ALGORITHM, this.key(), Buffer.from(ivRaw, "base64url"), { authTagLength: GCM_TAG_BYTES });
+    decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(Buffer.from(encryptedRaw, "base64url")), decipher.final()]).toString("utf8");
   }
 

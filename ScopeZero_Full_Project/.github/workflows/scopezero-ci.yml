@@ -56,6 +56,37 @@ jobs:
       - name: Verify ledger
         run: node tools/verify-ledger.js
 
+      - name: End-to-end load + ledger-verifies-under-load (regression gate)
+        run: node tools/load-test.js 6000 64
+
+  security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # upload CodeQL/Semgrep SARIF to the Security tab
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+
+      - name: CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+
+      - name: Semgrep scan (OWASP + security-audit + secrets)
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/javascript
+            p/security-audit
+            p/owasp-top-ten
+            p/secrets
+        continue-on-error: true   # surface findings without blocking until triaged
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:

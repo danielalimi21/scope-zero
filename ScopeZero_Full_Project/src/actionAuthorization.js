@@ -55,11 +55,14 @@ export function describeActionRequest(request = {}, classification = { label: "p
   const operation = String(
     toolManifest?.operation
       || (request.operation
-        // Floor a self-declared operation against the impact inferred from the TOOL
-        // NAME only (the free-text action is also self-declared and noisy). This
-        // catches "read" on bank.wire / data.export without escalating a legit
-        // "write" just because the action prose says "post".
-        ? mostImpactfulOperation(request.operation, inferOperation({ tool, action: "" }))
+        // Floor a self-declared operation against the impact inferred from the tool
+        // name's ACTION segment — the last dotted token by convention
+        // (vendor.resource.action): "bank.wire"->wire, "data.export"->export. Using
+        // only the last segment avoids a false escalation from a resource word in
+        // the middle (e.g. "aws.iam.read" is a READ, not a privilege_change just
+        // because "iam" appears). The free-text action is self-declared and noisy,
+        // so it is not used for the floor.
+        ? mostImpactfulOperation(request.operation, inferOperation({ tool: toolActionSegment(tool), action: "" }))
         : inferOperation({ tool, action }))
   ).toLowerCase();
   const actionType = String(toolManifest?.action_type || request.action_type || classifyActionType({ operation, tool, action, destination, manifest: toolManifest })).toLowerCase();
@@ -205,6 +208,13 @@ const OPERATION_IMPACT = {
 
 function operationRank(operation) {
   return OPERATION_IMPACT[String(operation || "").toLowerCase()] ?? 1;
+}
+
+// The action token of a tool name (vendor.resource.action -> action). Used so the
+// operation floor reads the verb at the end, not a resource word in the middle.
+function toolActionSegment(tool) {
+  const parts = String(tool || "").split(".").filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(tool || "");
 }
 
 // The more impactful of the agent's declared operation and the name-inferred one.

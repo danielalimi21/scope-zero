@@ -12,6 +12,7 @@ import { createRuntime } from "../src/runtime.js";
 import { evaluateProxyConnect } from "../src/proxyEnforcer.js";
 import { verifyMissionCapsule } from "../src/capsules.js";
 import { isExternalDestination, classifyPayload } from "../src/sensitiveData.js";
+import { AuthService, base64url } from "../src/auth.js";
 import { destinationAllowed, describeActionRequest } from "../src/actionAuthorization.js";
 
 const SECRET = "redteam-signing-secret";
@@ -285,6 +286,31 @@ test("a host suffix-confusable with a declared public sink does not bypass the s
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
+});
+
+// ── Auth: no alg-confusion, no tamper, no expiry bypass ─────────────────────
+test("bearer-token verification rejects forged/tampered/expired tokens", async () => {
+  const auth = new AuthService({ secret: "redteam-auth-secret" });
+  const good = auth.issueToken({ subject: "u", tenant_id: TENANT, roles: ["tenant_admin"] });
+  const [h, p, s] = good.split(".");
+
+  // Genuine token verifies.
+  const ok = await auth.verifyToken(good);
+  assert.ok((ok.roles || ok.payload?.roles || []).includes("tenant_admin"));
+
+  const reject = async (label, token) => {
+    await assert.rejects(() => auth.verifyToken(token), (e) => e.status === 401, label);
+  };
+  const noneH = base64url(JSON.stringify({ alg: "none", typ: "SZJWT" }));
+  const evilP = base64url(JSON.stringify({ sub: "u", tenant_id: TENANT, roles: ["platform_admin"], exp: Math.floor(Date.now() / 1000) + 9999 }));
+  const rsH = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+
+  await reject("alg:none", `${noneH}.${p}.`);
+  await reject("alg:none with junk sig", `${noneH}.${p}.x`);
+  await reject("tampered payload / role escalation, old sig", `${h}.${evilP}.${s}`);
+  await reject("forged HS256 signature", `${h}.${p}.${base64url("garbage")}`);
+  await reject("RS256 with no JWKS configured", `${rsH}.${p}.${s}`);
+  await reject("expired token", auth.issueToken({ subject: "u", tenant_id: TENANT, roles: ["tenant_admin"], ttl_seconds: -10 }));
 });
 
 // ── Money-amount evasion still hits the high-impact payment gate ─────────────

@@ -13,7 +13,19 @@ import { verifyMissionCapsule } from "./capsules.js";
 // (`now`/`verifyKey` injectable) so it is unit-testable without sockets.
 // verifyKey is the Ed25519 public key (or a shared-secret string in dev); a proxy
 // holding only the public key can authenticate a mission but cannot forge one.
-export function evaluateProxyConnect({ mission, host, requestedAgentId = null, verifyKey = "", now = new Date() }) {
+// `mode` defaults to "enforce" (refuse a non-conformant CONNECT). In "monitor"
+// mode the connection is ALLOWED regardless, but the verdict carries
+// `monitored: true` + `would_block`/`reason` so an observe/dry-run deployment
+// sees exactly what enforce mode would have refused — without cutting egress.
+export function evaluateProxyConnect({ mission, host, requestedAgentId = null, verifyKey = "", now = new Date(), mode = "enforce" }) {
+  const verdict = computeConnectVerdict({ mission, host, requestedAgentId, verifyKey, now });
+  if (mode === "monitor" && verdict.allowed === false) {
+    return { allowed: true, monitored: true, would_block: true, reason: verdict.reason, mission_id: verdict.mission_id };
+  }
+  return verdict;
+}
+
+function computeConnectVerdict({ mission, host, requestedAgentId, verifyKey, now }) {
   if (!mission) {
     return { allowed: false, reason: "no_active_mission", mission_id: null };
   }

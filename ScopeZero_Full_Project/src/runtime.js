@@ -445,7 +445,12 @@ export class ScopeZeroRuntime {
       authorization_id: authorization.authorization_id,
       authorization,
       evidence_hash: evidence.hash,
+      // The decision is always the TRUE verdict, and it's always recorded to the
+      // ledger — regardless of mode. `mode` tells the enforcement layer whether to
+      // act on it: "enforce" blocks/holds; "monitor" records but lets the action
+      // run (observe/dry-run deployment — full visibility, zero production risk).
       decision: verdict.decision,
+      mode: policy.mode || "enforce",
       verdict,
       approval,
       evidence

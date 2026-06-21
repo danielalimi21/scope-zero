@@ -1,12 +1,20 @@
 // Shared authorize-then-execute core for the ScopeZero SDK wrappers.
 //
-// Enforcement rules (fail-closed by design):
+// Enforcement rules (fail-closed by design) in the default "enforce" mode:
 //   - Execute ONLY on an explicit "allow", or on "redact" when a redactor is
 //     supplied (the redaction control must actually be applied — running a
 //     redact verdict on the raw payload would silently drop it).
 //   - Any other verdict (block / approval / quarantine_context) → do not execute.
 //   - If the gateway errors or is unreachable, treat it as a denial. Never
 //     execute on an unknown authorization state.
+//
+// "monitor" mode (observe / dry-run deployment): the decision is still computed
+// and recorded to the tamper-evident ledger by the gateway, but the action is
+// ALWAYS executed and the result is annotated with what enforce mode WOULD have
+// done (`monitored: true`, `would_block`). This lets a team roll ScopeZero out
+// across their whole agent fleet with zero risk to production — full visibility
+// first, flip to enforce when they trust it. Pass `monitor: true`, or the gateway
+// returns `mode: "monitor"` in the authorization.
 
 export async function authorizeAndExecute({
   sz,
@@ -17,7 +25,8 @@ export async function authorizeAndExecute({
   action,
   payload,
   handler,
-  redactor = null
+  redactor = null,
+  monitor = false
 }) {
   let authorization;
   try {
@@ -30,6 +39,18 @@ export async function authorizeAndExecute({
       payload
     });
   } catch (error) {
+    // Monitor mode must never break production — not even on a gateway error.
+    // Execute, and surface that the decision is unknown (no record was written).
+    if (monitor) {
+      return {
+        decision: "monitor_unverified",
+        executed: true,
+        monitored: true,
+        authorization_id: null,
+        gateway_error: error.message,
+        result: await runHandler(handler, payload, tool)
+      };
+    }
     // Fail closed: an unreachable or erroring gateway must block, not pass.
     return {
       decision: "error",
@@ -42,6 +63,22 @@ export async function authorizeAndExecute({
   const decision = authorization?.decision;
   const authorizationId = authorization?.authorization_id || null;
   const reasons = (authorization?.verdict?.reasons || []).map((r) => r.message).filter(Boolean);
+
+  // Monitor/observe: the gateway already recorded the true decision to the ledger;
+  // here we always run the action and report what enforce mode would have done.
+  if (monitor || authorization?.mode === "monitor") {
+    const wouldEnforce = decision !== "allow" && decision !== "redact";
+    return {
+      decision,
+      executed: true,
+      monitored: true,
+      would_enforce: wouldEnforce,
+      would_block: decision === "block",
+      authorization_id: authorizationId,
+      reasons,
+      result: await runHandler(handler, payload, tool)
+    };
+  }
 
   if (decision === "allow") {
     return { decision, executed: true, authorization_id: authorizationId, result: await runHandler(handler, payload, tool) };

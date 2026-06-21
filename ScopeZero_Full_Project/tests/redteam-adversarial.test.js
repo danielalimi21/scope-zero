@@ -239,6 +239,34 @@ test("a high-impact tool mislabeled 'read' is not silently allowed end-to-end", 
   }
 });
 
+// ── A suffix-confusable host cannot inherit a declared public-sink lane ──────
+test("a host suffix-confusable with a declared public sink does not bypass the seal", async () => {
+  const { runtime, rootDir } = await freshRuntime();
+  try {
+    const cap = await narrowMission(runtime, "agent.rt.sink", {
+      allowed_tools: ["statuspage.update"],
+      allowed_destinations: ["*"],
+      mission: {
+        public_egress_destinations: ["status.example.com"],
+        action_contracts: [{
+          id: "c.status", tools: ["statuspage.update"], operations: ["write", "execute"],
+          data_classes: ["public", "internal"], destinations: ["*"], effect: "allow"
+        }]
+      }
+    });
+    // Benign content to an attacker host that suffix-matches the declared sink.
+    const out = await runtime.evaluateToolCall({
+      tenant_id: TENANT, agent_id: "agent.rt.sink", mission_id: cap.id,
+      tool: "statuspage.update", action: "post status", operation: "write",
+      payload: { summary: "All green." },
+      destination: { type: "url", address: "evilstatus.example.com", external: true }
+    });
+    assert.notEqual(out.decision, "allow", `egress to a sink-confusable host must be sealed (got ${out.decision})`);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 // ── Prototype pollution via payload keys must not mutate Object.prototype ────
 test("payload with __proto__/constructor keys does not pollute prototypes", async () => {
   const { runtime, rootDir } = await freshRuntime();

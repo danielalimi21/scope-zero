@@ -307,7 +307,11 @@ function destinationIsPublicSink(mission, action) {
   const addr = String(address).toLowerCase();
   const matches = (d) => {
     const norm = String(d).toLowerCase();
-    return norm === "*" || norm === addr || addr.endsWith(norm);
+    // Label-boundary match: a declared sink "status.example.com" must NOT also
+    // grant autonomy to "evilstatus.example.com". A bare endsWith here would let
+    // a suffix-confusable attacker host inherit a public-broadcast lane and slip
+    // sensitive egress past the seal.
+    return norm === "*" || norm === addr || addr.endsWith("." + norm);
   };
   // Mission-level declaration: a flat list of destinations the mission may post to
   // autonomously. Ergonomic alternative to flagging each contract.

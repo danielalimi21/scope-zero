@@ -9,6 +9,8 @@
   },
   "scripts": {
     "start": "node server.js",
+    "demo": "node examples/authorized-autonomy-demo.js",
+    "demo:hero": "node examples/authorized-autonomy-demo.js",
     "demo:agent": "node examples/malicious-diligence-agent.js",
     "demo:breach": "node examples/breach-containment-demo.js",
     "demo:exfil": "node examples/exfil-to-allowed-host-demo.js",

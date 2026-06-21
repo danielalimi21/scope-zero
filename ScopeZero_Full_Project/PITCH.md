@@ -1,58 +1,96 @@
-# ScopeZero — the egress gate for AI agents
+# ScopeZero — Authorized Autonomy
 
-**Your agents will get prompt-injected. ScopeZero is the fail-closed, kernel-enforced gate that binds every byte of egress to a signed, time-boxed mission — and proves it in a tamper-evident ledger.**
+**The trust layer companies embed so their AI agents can take irreversible
+actions — move money, change cloud infrastructure, send things outside — without
+ever exceeding what a human authorized, with a verifiable receipt for every one.**
 
 ---
 
 ## The problem
 
-Companies are handing autonomous agents real credentials — GitHub, Slack, Gmail, AWS, internal MCP servers. An agent is a confused deputy by design: it reads untrusted content (web pages, tickets, emails, tool outputs) and then acts with privileged access. One prompt injection turns "summarize these diligence docs" into "email the customer revenue file to attacker@gmail.com," and nothing structurally stops it. The security team can't even answer the question their auditor asks: *prove what your agent did last Tuesday, and that it was authorized.*
+The moment an agent stops *drafting* and starts *doing* — wiring a payment,
+attaching an IAM policy, sending an email, merging a PR — the rules change. A bad
+draft is an edit away from fixed. A bad wire is gone. A bad privilege grant is a
+breach. And agents are confused deputies by design: they read untrusted content
+(web pages, tickets, tool output) and then act with real credentials. One prompt
+injection turns "review these invoices" into "wire the balance to this account."
 
-Existing answers don't fit. An egress proxy allow-lists hosts but knows nothing about *which agent on whose authority for what purpose*. A guardrail SDK inspects prompts but an injected agent can route around the SDK entirely. An IAM role is static; an agent's task is per-mission and ephemeral.
+The teams building these agents hit a wall: **their own enterprise customers
+won't approve an agent that *might* take an irreversible action it shouldn't.**
+"We have a prompt-injection classifier" is not an answer a CISO accepts for an
+agent that can move money. Detection is a probability after the fact. What's
+needed is a guarantee before the fact — and proof.
 
-## The wedge
+## Why existing answers don't fit
 
-ScopeZero issues a **signed mission capsule** before an agent runs: *this agent, delegated by this human, may use these tools, on this data class, to these destinations, until this timestamp.* Then it enforces that capsule at the layer an injected agent can't route around — **the network**, fail-closed at the kernel.
+- **Guardrail / prompt-firewall SDKs** inspect content. An injected agent opens
+  its own socket and routes around them; and "probably safe" doesn't hold for an
+  irreversible action.
+- **AI gateways** (route + cache + observe LLM calls) govern the *model call*,
+  not the *action* the agent then takes against the world.
+- **IAM** is static and identity-scoped; an agent's authority is per-task,
+  ephemeral, and needs to be *narrower* than the human's.
+- **SIEM / audit** tells you what happened after it happened. Too late for the
+  action you can't undo.
 
-- Agent egress is forced through ScopeZero at the kernel — a raw socket can't skip it. On Kubernetes that's a **NetworkPolicy** + admission webhooks that inject the proxy config and **reject pods that strip it** (`failurePolicy: Fail` → ScopeZero down means no new agent pods, not open ones). **Not on Kubernetes?** A **Docker internal network** gives the same kernel-enforced block — the agent has no internet route except the proxy ([`deploy/docker-egress-lockdown.md`](deploy/docker-egress-lockdown.md)).
-- Every outbound HTTPS `CONNECT` is refused unless it's bound to a mission that is **signature-valid, unexpired, active, owned by the requesting agent, and whose contract permits the destination**. An expired or tampered mission opens nothing.
-- DNS is pinned to the cluster resolver, closing the obvious exfil side-channel.
-- Every decision — allow, block, redact, approval, quarantine — is written to a **hash-chained, HMAC-keyed ledger**. Edit one entry and verification breaks; you can't re-forge the chain without the signing secret.
+## The wedge — Authorized Autonomy
 
-## Why an incumbent can't just ship this
+A human signs a **scoped, time-boxed authority** for the agent (Ed25519). Before
+each action, ScopeZero decides:
 
-A service mesh enforces *network identity*; it has no concept of a *signed, human-delegated, time-boxed agent mission*. A prompt-firewall enforces *content*; it's bypassed the moment the agent opens its own socket. ScopeZero is the only layer that ties **kernel-enforced egress** to a **cryptographic mission contract** with a **tamper-evident, externally anchorable audit trail** — the intersection is the moat, and it's the exact shape of what a CISO has to certify for SOC 2 / EU AI Act / HIPAA.
+1. **In authority → run.** The agent works autonomously inside its signed scope.
+2. **Exceeds authority → contained.** Blocked before execution — self-granting
+   admin, wiring money out, sending to an off-contract destination. The kernel
+   egress boundary means an agent that skips the SDK still can't reach a
+   destination outside its authority.
+3. **Irreversible but legitimate → human co-sign.** Privilege change, payment,
+   external send are held for an out-of-band human approval, then cleared — not
+   run on the agent's word, not blocked outright.
+4. **Always → a tamper-evident receipt.** Every decision is hash-chained and
+   independently verifiable. The builder hands it to *their* customer:
+   *authorized, in-scope, provable.*
+
+## Why an incumbent can't trivially ship this
+
+The differentiator is the *combination*: a **cryptographic human→agent authority**
++ **kernel-enforced containment** an injected agent can't route around + a
+**mandatory co-sign on irreversible actions** + a **receipt your customer can
+verify without trusting you.** Detectors don't contain; gateways don't bind
+actions to a signed human delegation; service meshes have no concept of a mission.
+The intersection is the position.
 
 ## The proof — run it in 10 seconds
 
 ```
-npm test            # 192 tests, 0 failures
-npm run demo:breach # injected agent vs. a signed mission
-npm run demo:exfil  # exfil to an ALLOWED host, caught at the action layer
-npm run bench       # persistence hot-path throughput
+npm run demo          # Authorized Autonomy, end to end
+npm run demo:breach   # injected agent vs. a signed authority — every escape contained
+npm test              # 259 tests, 0 failures
 ```
 
-`demo:breach` walks an injected diligence agent through every escape and shows containment, then verifies the ledger: SDK exfil → blocked; raw tunnel to pastebin → blocked; **expired-mission replay → blocked**; **forged capsule → blocked**; ledger verifies clean. `demo:exfil` covers the hard case the network layer *can't* see: data leaving for a host that is in contract (`api.github.com`) — caught at the action layer because the payload's class can't be established, while the host-only proxy allows the same CONNECT. Exit code is non-zero if any containment fails — so the guarantee is executable, not a slide.
+`npm run demo` walks one agent through the whole story: an in-scope read runs
+autonomously; a self-grant of AdministratorAccess is contained; a $250k wire to
+an outside account is contained; a *legitimate* policy change is held for a human
+co-sign, approved, then cleared; the receipt verifies clean. Exit code is
+non-zero if any guarantee fails — the proof is executable, not a slide.
 
-## Architecture in five lines
+## Who it's for
 
-- **Mission capsule** (`src/capsules.js`) — Ed25519-signed, TTL-bounded authorization token (private key signs at the gateway; verifiers hold only the public key, so a leaked verify key can't forge a mission); vendor-neutral action contracts `(tool, operation, data_class, destination)`.
-- **Enforcement** — Layer 1 pre-exec gateway (SDK, action-level; fail-closed on block/approval *and* on gateway error, redact enforced via a redactor), Layer 2 HTTPS `CONNECT` proxy (mission-bound, destination-level), Layer 3 kernel egress block (K8s NetworkPolicy *or* Docker internal network, fail-closed).
-- **Ledger** (`src/ledger.js`) — append-only, HMAC-keyed hash chain, optional external anchoring.
-- **Advisory signals (not the guarantee)** — these raise risk and route to human approval; they never stand alone as the block, because the deterministic contract gates do that. Server-side data classification (keyword-based — and egress of content it *can't* positively class is held for review rather than trusted as public); an obfuscation-normalizing prompt-influence heuristic (homoglyph fold, letter-spacing/punctuation collapse, base64 — strong on the adversarial corpus in `tests/prompt-injection-corpus.test.js`, but a denylist by nature, so we treat it as a signal); a keyword-overlap intent-drift screen (not semantic "understanding"); behavioral anomaly detection; MCP trust registry; agent identity certs.
-- **Multi-tenant** — Postgres with row-level security (every tenant table, incl. hot-path); hot-path state (behavior, session risk, metrics) on per-row atomic upserts so the gateway scales past single-writer throughput. `npm run bench`: ~31k hot-path writes/sec with **0 full-state-blob rewrites** on the persistence layer.
+Companies **building agents that take real actions** — cloud/devops copilots,
+fintech-ops agents, automation that mutates production systems. They embed
+ScopeZero so they can ship "autonomous mode" their customers actually approve.
 
-## Honest scope (what's enforcement vs. governance)
+## Honest scope
 
-The network layer is *containment* and only as strong as the kernel egress block being applied (K8s NetworkPolicy or Docker internal network) — that's the hard, demoable guarantee, and the pitch leads with it. Bare SDK with no network lockdown is governance/audit only; we label it as such. Tunneled HTTPS is enforced at destination + live-mission granularity, not per-request action (TLS bodies are opaque) — per-action enforcement is the SDK layer's job. Recursive DNS-tunnel prevention needs a filtering resolver (pinning to kube-dns kills the direct path; the rest is roadmap). We say this out loud because a security product that overclaims is worse than one that's precise.
-
-## Threat coverage
-
-Mapped to OWASP Top 10 for LLM Applications (2025) and MITRE ATLAS in
-[`SECURITY_COVERAGE.md`](SECURITY_COVERAGE.md) — strong on the slice ScopeZero
-owns (Excessive Agency, Sensitive-Info Disclosure, Prompt-Injection containment,
-Unbounded Consumption), honest about what's another layer's job.
+The full containment guarantee on egress holds only with the kernel egress block
+applied (Kubernetes NetworkPolicy or a Docker internal network) — that's the hard
+part, and we lead with it rather than overclaiming. The advisory signals
+(content classifier, prompt-influence heuristic) raise risk and route to a human;
+they are never the sole control — the deterministic authority gates and the
+co-sign are. A security product that overclaims is worse than one that's precise.
 
 ## The line
 
-**Adopt ScopeZero and an injected agent is contained at the kernel, bound to a signed mission, and provable to your auditor. Skip it and you're trusting that your agents never read anything malicious. They will.**
+**Embed ScopeZero and your agent can take real actions your customer will sign
+off on: it can't exceed the authority a human gave it, irreversible moves need a
+co-sign, and every action is provable. Skip it and you're asking an enterprise to
+trust that your agent never reads anything malicious. It will.**

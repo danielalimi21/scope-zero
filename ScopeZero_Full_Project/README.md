@@ -1,18 +1,23 @@
-# ScopeZero
+# ScopeZero — Authorized Autonomy
 
-**ScopeZero authorizes every AI-agent action against a signed, human-delegated mission before it runs — and keeps a tamper-evident record of every decision, so you can prove what your agents did and that it was authorized.**
+**The trust layer you drop in so an AI agent can take real, irreversible actions — move money, change cloud infrastructure, send things to the outside world — without ever exceeding what a human authorized, and with a verifiable receipt for every action.**
 
-![ScopeZero containing a hijacked agent — run it yourself in 10s with `npm run demo:breach`](gtm/scopezero-demo.gif)
+![ScopeZero keeping an agent inside its authority — run it yourself in 10s with `npm run demo`](gtm/scopezero-demo.gif)
 
-It sits between AI agents and the tools they use. Before an agent sends email, exports data, opens a ticket, touches cloud permissions, calls an MCP tool, or moves information across a boundary, ScopeZero asks one question:
+ScopeZero gives an agent a **signed, time-boxed authority** — *this agent, delegated by this human, may use these tools, on this data, to these destinations, until this time.* Then it enforces that authority before each action runs:
 
-> Is this specific action authorized by the agent's approved mission?
+- the agent works **autonomously** inside its authority;
+- it is **contained** — blocked before execution — the moment it tries to exceed it;
+- any **irreversible** action (grant privilege, move money, external send) is held for a **human co-sign** instead of running on the agent's word;
+- every decision lands on a **tamper-evident receipt** you can hand to an auditor — or to your own customer.
 
-…and writes the answer to a hash-chained ledger that can't be quietly rewritten. The record is the system of record for agent behavior; the live authorization gate is what populates it. You get both: a provable audit trail *and* fail-closed prevention.
+We don't try to *detect* a bad agent after the fact. We make it impossible for the agent to exceed a signed authority, and we prove it couldn't have. Detection gives you a probability; containment gives you a guarantee — and a guarantee is what matters when the action can't be undone.
 
-The core line is simple:
+The core line:
 
 > The agent was authorized. The action was not.
+
+> **Repositioning note (Jun 2026):** ScopeZero is moving from a horizontal "AI authorization gateway" to **Authorized Autonomy** — an embeddable layer for builders of agents that take irreversible actions. The engine is the same and fully runnable; what sharpens is the focus. See [REPOSITIONING.md](REPOSITIONING.md) for the architecture and path of work.
 
 ## Why It Matters
 
@@ -80,13 +85,20 @@ The browser app connects to the live backend when served from the gateway. If `i
 
 ## Verify
 
-In another terminal:
+Run the hero demo first — it's a self-contained, executable proof (exit code is
+non-zero if any guarantee fails to hold):
+
+```bash
+npm run demo          # Authorized Autonomy: agent works, can't exceed authority, co-sign + receipt
+npm run demo:breach   # injected agent vs. a signed authority — every escape contained
+```
+
+Then the full verification surface:
 
 ```bash
 npm run check
-npm test
+npm test                         # 259 tests, 0 failures
 node tools/smoke-test.js
-node examples/malicious-diligence-agent.js
 node tools/verify-ledger.js
 node tools/config-check.js
 node tools/gen-keys.js            # generate an Ed25519 signing keypair

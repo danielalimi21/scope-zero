@@ -2,11 +2,18 @@
 
 ## Positioning
 
-ScopeZero is a pre-execution authorization gateway for autonomous AI-agent tool calls.
+> **Current direction:** the product is repositioned as **Authorized Autonomy** —
+> an embeddable trust layer for builders of agents that take irreversible actions.
+> The engine described below is reused; see [REPOSITIONING.md](REPOSITIONING.md)
+> for the four-layer architecture (Authority → Gate → Containment → Proof), the
+> reuse/build map, and the path of work. This document remains the reference for
+> the underlying engine.
 
-It is not an AI chatbot monitor, prompt scanner, IAM replacement, or SIEM dashboard. It is the runtime control layer that decides whether a specific autonomous action is allowed before the tool call executes.
+ScopeZero is a pre-execution authorization layer for autonomous AI-agent actions.
 
-The core product primitive is the **Mission Action Contract**: a signed, short-lived authorization object that says which agent may perform which actions, through which tools, against which data classes and destinations, under which human delegation and risk limits.
+It is not an AI chatbot monitor, prompt scanner, IAM replacement, or SIEM dashboard. It is the runtime control layer that decides whether a specific autonomous action is allowed before the tool call executes — and that holds irreversible actions for a human co-sign.
+
+The core product primitive is the **Authority Grant** (Mission Action Contract in the engine): a signed, short-lived authorization object that says which agent may perform which actions, through which tools, against which data classes and destinations, under which human delegation and risk limits.
 
 ## System Components
 

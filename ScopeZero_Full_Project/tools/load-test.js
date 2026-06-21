@@ -21,6 +21,8 @@
 
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const REQUESTS = Number(process.argv[2] || 20000);
@@ -95,7 +97,10 @@ async function main() {
       // The per-IP rate limiter is a DoS control for untrusted callers, separate
       // from decision throughput. Disable it so this single synthetic source can
       // measure how fast the gateway DECIDES, not how fast we trip the limiter.
-      SCOPEZERO_RATE_LIMIT_PER_MINUTE: process.env.SCOPEZERO_RATE_LIMIT_PER_MINUTE || "0"
+      SCOPEZERO_RATE_LIMIT_PER_MINUTE: process.env.SCOPEZERO_RATE_LIMIT_PER_MINUTE || "0",
+      // Isolated data dir so the run starts from a clean store + ledger and never
+      // pollutes (or inherits corruption from) the project's data/.
+      SCOPEZERO_DATA_DIR: process.env.SCOPEZERO_DATA_DIR || fs.mkdtempSync(path.join(os.tmpdir(), "scopezero-loadtest-"))
     },
     stdio: ["ignore", "ignore", "inherit"]
   });
@@ -164,6 +169,13 @@ async function main() {
     const ok = latencies.filter((x) => typeof x === "number").sort((a, b) => a - b);
     const dangerous = Math.floor((REQUESTS - 1) / 10) + 1;
 
+    // The tamper-evident ledger must still verify after all that concurrent
+    // appending — a corrupt chain under load would make the audit trail worthless.
+    let ledgerValid = false;
+    try {
+      ledgerValid = (await api("GET", "/v1/ledger/verify"))?.valid === true;
+    } catch { ledgerValid = false; }
+
     console.log("\nScopeZero end-to-end HTTP load test");
     console.log("─".repeat(56));
     console.log(`store                   ${process.env.SCOPEZERO_STORE === "postgres" ? "postgres" : "sqlite"}`);
@@ -179,11 +191,12 @@ async function main() {
     console.log(`in-scope allowed        ${allow.toLocaleString()}`);
     console.log(`dangerous contained     ${contained.toLocaleString()} / ${dangerous.toLocaleString()}`);
     console.log(`dangerous ALLOWED       ${dangerousAllowed}  (must be 0 — the security invariant)`);
+    console.log(`ledger verifies         ${ledgerValid}  (tamper-evident chain intact under load)`);
     console.log("─".repeat(56));
 
     shutdown();
-    if (errors > 0 || dangerousAllowed > 0) {
-      console.error("FAIL: errors, or a dangerous action was allowed under load.");
+    if (errors > 0 || dangerousAllowed > 0 || !ledgerValid) {
+      console.error("FAIL: errors, a dangerous action allowed, or ledger corrupt under load.");
       process.exit(1);
     }
     process.exit(0);

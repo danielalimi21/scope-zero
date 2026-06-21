@@ -21,6 +21,9 @@ import { assessStartupReadiness } from "./src/startupGate.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+// Where the local SQLite store + JSONL ledger live. Defaults to the project dir;
+// override (e.g. a mounted volume, or an isolated dir for load tests) via env.
+const DATA_DIR = process.env.SCOPEZERO_DATA_DIR || __dirname;
 const portArg = process.argv.find((arg) => arg.startsWith("--port="));
 const PORT = Number(process.env.PORT || portArg?.split("=")[1] || 8788);
 const SIGNING_SECRET = process.env.SCOPEZERO_SIGNING_SECRET || "dev-scopezero-signing-secret-change-me";
@@ -96,7 +99,7 @@ const PROXY_PATH_MARKER = process.env.SCOPEZERO_PROXY_PATH_MARKER || "";
 const registry = new ConnectorRegistry();
 const approvalNotifier = createApprovalNotifierFromEnv(process.env);
 const runtime = await createRuntime({
-  rootDir: __dirname,
+  rootDir: DATA_DIR,
   signingSecret: SIGNING_SECRET,
   toolManifestResolver: (tool) => registry.getManifest(tool),
   approvalNotifier

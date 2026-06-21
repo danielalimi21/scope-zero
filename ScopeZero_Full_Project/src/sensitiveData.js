@@ -299,7 +299,10 @@ export function detectPromptInfluence(context = {}, policy = {}) {
     context.instruction
   ]
     .filter(Boolean)
-    .join("\n");
+    .join("\n")
+    // Bound agent-supplied context like the classifier does — injection
+    // instructions are small and near the top; never scan unbounded input.
+    .slice(0, MAX_CLASSIFY_BYTES);
   const baseCandidates = [normalizePromptText(rawFragments), ...decodeLikelyBase64(rawFragments).map(normalizePromptText)].filter(Boolean);
   // depunct: in-word separators removed but word spaces kept ("ig.no.re all" →
   // "ignore all"), so boundary-anchored signals still fire on punctuation-split

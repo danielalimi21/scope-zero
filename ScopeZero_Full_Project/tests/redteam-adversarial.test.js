@@ -257,8 +257,16 @@ test("declaring 'read' on a high-impact tool does not downgrade its operation", 
     const d = describeActionRequest({ tool, action: "harmless lookup", operation: declared }, { label: "public" }, {});
     assert.equal(d.operation, expected, `${tool} declared ${declared} must floor to ${expected}, got ${d.operation}`);
   }
-  // A genuinely benign tool is not escalated.
-  assert.equal(describeActionRequest({ tool: "drive.read", action: "read", operation: "read" }, { label: "public" }, {}).operation, "read");
+  // Benign tools are NOT falsely escalated — including a read on a resource whose
+  // name contains a high-impact word ("aws.iam.read" is a read, not privilege_change).
+  for (const [tool, op, expected] of [
+    ["drive.read", "read", "read"],
+    ["aws.iam.read", "read", "read"],
+    ["aws.iam.attachPolicy", "read", "privilege_change"], // mislabeled, still escalates (attachPolicy IS the action)
+    ["statuspage.update", "write", "write"]
+  ]) {
+    assert.equal(describeActionRequest({ tool, action: "x", operation: op }, { label: "public" }, {}).operation, expected, `${tool} should resolve to ${expected}`);
+  }
 });
 
 test("a high-impact tool mislabeled 'read' is not silently allowed end-to-end", async () => {

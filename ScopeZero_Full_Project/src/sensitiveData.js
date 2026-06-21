@@ -12,7 +12,11 @@ const FINDERS = [
   { code: "customer_revenue", level: 5, pattern: /\b(customer revenue|revenue by customer|arr|mrr|invoice total)\b/i },
   { code: "confidential_marker", level: 4, pattern: /\b(confidential|restricted|privileged|attorney-client)\b/i },
   { code: "personal_data", level: 4, pattern: /\b(ssn|passport|date of birth|medical record|patient)\b/i },
-  { code: "email_address", level: 2, pattern: /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i }
+  // Quantifiers are BOUNDED on purpose. An unbounded `[..]+@` backtracks O(n^2)
+  // on a long run of local-part chars with no '@' (a payload of all digits/letters
+  // would pin a CPU). RFC caps the local part at 64 and a label at 63; bounding
+  // keeps the scan linear with no loss of real-email coverage.
+  { code: "email_address", level: 2, pattern: /[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]{1,255}\.[A-Z]{2,24}/i }
 ];
 
 // Value-shape detectors: fire on the STRUCTURE of a sensitive value, with no
@@ -82,8 +86,16 @@ const HOMOGLYPHS = new Map([
 ]);
 const HOMOGLYPH_RE = new RegExp(`[${[...HOMOGLYPHS.keys()].join("")}]`, "g");
 
+// A gateway must never run regex detectors over unbounded agent-supplied input —
+// a multi-megabyte payload would pin a CPU and stall request processing (DoS).
+// Scan a bounded prefix; a payload larger than this is treated as a non-public
+// "oversized" shape, so it is routed to human review rather than trusted.
+const MAX_CLASSIFY_BYTES = 256 * 1024;
+
 export function classifyPayload(payload = {}) {
-  const raw = typeof payload === "string" ? payload : JSON.stringify(payload);
+  const rawFull = typeof payload === "string" ? payload : JSON.stringify(payload ?? {});
+  const oversized = rawFull.length > MAX_CLASSIFY_BYTES;
+  const raw = oversized ? rawFull.slice(0, MAX_CLASSIFY_BYTES) : rawFull;
   // Scan the raw bytes AND anything trivially decoded out of them. A base64- or
   // hex-wrapped credential (e.g. an AWS key encoded to dodge the keyword/prefix
   // finders) classifies as opaque "public" otherwise: the prompt-influence path
@@ -116,7 +128,9 @@ export function classifyPayload(payload = {}) {
   // bulk/tabular/encoded/large shape — because opaque content carrying no trigger
   // term is an absence of evidence, not evidence of absence. `established` is what
   // the egress gate trusts; a tool manifest cannot override the bytes here.
-  const egressShape = analyzeEgressShape(payload);
+  // An oversized payload is a bulk shape by definition: its class can't be
+  // positively established from a bounded scan, so it is never trusted as public.
+  const egressShape = oversized ? "oversized_payload" : analyzeEgressShape(payload);
   const established = level >= 2 ? true : egressShape === null;
 
   return {
@@ -414,9 +428,15 @@ function denseForm(value) {
 // scanned by the finders. Returns only decodings that look like text, capped to
 // keep classification cheap. Used by the DLP classifier, mirroring the decode the
 // prompt-influence path already does — the two must agree on the same bytes.
+// A wrapped credential, key, or token is small. A huge base64/hex run is not a
+// hidden secret — it is an amplification attack (decode + rescan turns one big
+// blob into multiplied scan work). Only decode tokens in a sane size band.
+const MAX_DECODE_TOKEN = 2048;
+const decodable = (tokens) => tokens.filter((t) => t.length <= MAX_DECODE_TOKEN);
+
 function decodeEmbeddedPayloads(value) {
   const out = [];
-  const b64 = String(value || "").match(/[A-Za-z0-9+/=]{16,}/g) || [];
+  const b64 = decodable(String(value || "").match(/[A-Za-z0-9+/=]{16,}/g) || []);
   for (const token of b64.slice(0, 16)) {
     try {
       const text = Buffer.from(token, "base64").toString("utf8");
@@ -425,7 +445,7 @@ function decodeEmbeddedPayloads(value) {
       // Ignore malformed base64-looking fragments.
     }
   }
-  const hex = String(value || "").match(/\b[0-9a-fA-F]{32,}\b/g) || [];
+  const hex = decodable(String(value || "").match(/\b[0-9a-fA-F]{32,}\b/g) || []);
   for (const token of hex.slice(0, 16)) {
     if (token.length % 2 !== 0) continue;
     try {
@@ -439,7 +459,7 @@ function decodeEmbeddedPayloads(value) {
 }
 
 function decodeLikelyBase64(value) {
-  const tokens = String(value || "").match(/[A-Za-z0-9+/=]{16,}/g) || [];
+  const tokens = decodable(String(value || "").match(/[A-Za-z0-9+/=]{16,}/g) || []);
   const decoded = [];
   for (const token of tokens.slice(0, 12)) {
     try {

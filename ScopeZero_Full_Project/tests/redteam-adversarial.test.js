@@ -11,7 +11,7 @@ import path from "node:path";
 import { createRuntime } from "../src/runtime.js";
 import { evaluateProxyConnect } from "../src/proxyEnforcer.js";
 import { verifyMissionCapsule } from "../src/capsules.js";
-import { isExternalDestination } from "../src/sensitiveData.js";
+import { isExternalDestination, classifyPayload } from "../src/sensitiveData.js";
 import { destinationAllowed, describeActionRequest } from "../src/actionAuthorization.js";
 
 const SECRET = "redteam-signing-secret";
@@ -237,6 +237,26 @@ test("a high-impact tool mislabeled 'read' is not silently allowed end-to-end", 
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
+});
+
+// ── Classifier must not hang (ReDoS) on large/pathological payloads ─────────
+test("the classifier handles large adversarial payloads in bounded time", () => {
+  for (const payload of [
+    "1".repeat(5_000_000),          // long digit run (was O(n^2) via the email regex)
+    "z".repeat(5_000_000),          // long letter run
+    "QUtJQ".repeat(800_000),        // 4MB base64-looking blob
+    "deadbeef".repeat(500_000)      // 4MB hex-looking blob
+  ]) {
+    const t0 = process.hrtime.bigint();
+    const r = classifyPayload({ text: payload });
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 2000, `classify must finish < 2000ms, took ${ms.toFixed(0)}ms`);
+    assert.equal(r.established, false, "an oversized/opaque payload is never trusted as established-public");
+  }
+  // Real detections still fire after the hardening.
+  assert.equal(classifyPayload({ text: "contact bob@example.com" }).findings.includes("email_address"), true);
+  assert.equal(classifyPayload({ text: "4111 1111 1111 1111" }).level, 5);
+  assert.equal(classifyPayload({ text: "AKIAIOSFODNN7EXAMPLE" }).level, 5);
 });
 
 // ── A suffix-confusable host cannot inherit a declared public-sink lane ──────

@@ -17,7 +17,7 @@ The core line:
 
 > The agent was authorized. The action was not.
 
-> **Repositioning note (Jun 2026):** ScopeZero is moving from a horizontal "AI authorization gateway" to **Authorized Autonomy** — an embeddable layer for builders of agents that take irreversible actions. The engine is the same and fully runnable; what sharpens is the focus. See [REPOSITIONING.md](REPOSITIONING.md) for the architecture and path of work.
+> **Status (Jul 2026): portfolio / research.** ScopeZero is a complete, runnable agent-authorization engine built solo with AI — signed mission capsules, a fail-closed action gate, host-allowlist egress containment, a hash-chained ledger, 280+ passing tests. It stands here as an engineering portfolio piece and a design record (see [REPOSITIONING.md](REPOSITIONING.md)). Much of what it does now converges with shipping platforms — agent egress controls (Cloudflare/Anthropic), human co-sign on high-risk agent actions (Delinea), and signed agent-identity/delegation drafts (IETF AIP/AAP). The one control here those do **not** cover — a session **ingest-taint** gate that catches confidential-data laundering to an *allowed* host — has been distilled into a small, benchmarked, standalone library: **[taintgate »](https://github.com/danielalimi21/taintgate)**
 
 ## Why It Matters
 
